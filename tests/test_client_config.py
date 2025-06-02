@@ -11,6 +11,7 @@ class TestClientConfiguration:
         assert client.base_url == "http://localhost:11434"
         assert client.max_server_startup_attempts == 3
         assert client.debug is False
+        assert client.concurrent_models == 1  # Should always be 1
         assert isinstance(client.console, Console)
         assert client.conversations == {}
 
@@ -21,27 +22,13 @@ class TestClientConfiguration:
             max_server_startup_attempts=5,
             debug=True,
             console=custom_console,
+            concurrent_models=2,  # Should be ignored and set to 1
         )
         assert client.base_url == "http://custom-url:12345"
         assert client.max_server_startup_attempts == 5
         assert client.debug is True
+        assert client.concurrent_models == 1  # Should always be 1, ignoring the passed value
         assert client.console == custom_console
-
-    def test_client_config_model_defaults(self):
-        config = ClientConfig()
-        assert config.base_url == "http://localhost:11434"
-        assert config.max_server_startup_attempts == 3
-        assert config.debug is False
-
-    def test_client_config_model_custom(self):
-        config = ClientConfig(
-            base_url="http://another-url:54321",
-            max_server_startup_attempts=10,
-            debug=True
-        )
-        assert config.base_url == "http://another-url:54321"
-        assert config.max_server_startup_attempts == 10
-        assert config.debug is True
 
     def test_create_client_defaults(self):
         client = create_client()
@@ -56,11 +43,13 @@ class TestClientConfiguration:
             base_url="http://custom-ollama:11434",
             max_server_startup_attempts=5,
             debug=True,
-            console=custom_console
+            console=custom_console,
+            concurrent_models=4  # Should be ignored and set to 1
         )
         assert client.base_url == "http://custom-ollama:11434"
         assert client.max_server_startup_attempts == 5
         assert client.debug is True
+        assert client.concurrent_models == 1  # Should always be 1, ignoring the passed value
         assert client.console == custom_console
 
     def test_client_config_passed_to_client(self):

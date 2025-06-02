@@ -26,7 +26,8 @@ from tenacity import (
     wait_exponential,
 )
 
-# Message for server not running
+# Constants
+CONCURRENT_MODELS = 1  # Only one model can be loaded at a time due to system constraints
 OLLAMA_SERVER_NOT_RUNNING_MESSAGE = """
 [bold red]Ollama server is not running or not responsive at {base_url}.[/bold red]
 
@@ -60,6 +61,7 @@ class ClientConfig(BaseModel):
     base_url: str = Field(default="http://localhost:11434", description="Ollama API base URL")
     max_server_startup_attempts: int = Field(default=3, description="Max server responsiveness check attempts")
     debug: bool = Field(default=False, description="Enable debug output")
+    concurrent_models: int = Field(default=CONCURRENT_MODELS, description="Maximum number of concurrent models (always 1)")
 
 
 class OllamaServerNotRunningError(ConnectionError):
@@ -76,33 +78,54 @@ class TonicOllamaClient:
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        max_server_startup_attempts: int = 3, # For checking responsiveness
+        max_server_startup_attempts: int = 3,
         debug: bool = False,
         console: Optional[Console] = None,
+        concurrent_models: int = CONCURRENT_MODELS,
     ):
         if console is None:
             console = Console()
+
+        # Always enforce CONCURRENT_MODELS=1 regardless of what was passed
+        if concurrent_models != CONCURRENT_MODELS:
+            if debug:
+                fancy_print(console, 
+                    f"Warning: concurrent_models={concurrent_models} was requested but only {CONCURRENT_MODELS} is supported. Using {CONCURRENT_MODELS}.", 
+                    style="yellow")
+            concurrent_models = CONCURRENT_MODELS
 
         self.config = ClientConfig(
             base_url=base_url,
             max_server_startup_attempts=max_server_startup_attempts,
             debug=debug,
+            concurrent_models=CONCURRENT_MODELS,  # Always use the constant
         )
         self.base_url = self.config.base_url
         self.max_server_startup_attempts = self.config.max_server_startup_attempts
         self.debug = self.config.debug
+        self.concurrent_models = self.config.concurrent_models
         self.console = console
         self.async_client: Optional[AsyncClient] = None
         self.conversations: Dict[str, List[Dict[str, Any]]] = {}
         
+        # Create a semaphore to limit concurrent model access - always use CONCURRENT_MODELS=1
+        self._model_semaphore = asyncio.Semaphore(CONCURRENT_MODELS)
+        
         if self.debug:
-            fancy_print(self.console, f"Initialized TonicOllamaClient (base_url={base_url}, external server).", style="dim blue")
+            fancy_print(self.console, 
+                f"Initialized TonicOllamaClient (base_url={base_url}, concurrent_models={CONCURRENT_MODELS})", 
+                style="dim blue")
 
     def get_async_client(self) -> AsyncClient:
         """Get or create the async client instance."""
         if not self.async_client:
             self.async_client = AsyncClient(host=self.base_url)
+        assert self.async_client is not None, "Async client should be initialized."
         return self.async_client
+    
+    def get_available_model_slots(self) -> int:
+        """Return the number of available slots for concurrent model usage."""
+        return self._model_semaphore._value
 
     def _is_ollama_server_running_sync(self) -> bool:
         """Synchronously check if Ollama server is responsive."""
@@ -192,6 +215,7 @@ class TonicOllamaClient:
         """Send chat message, get response, manage conversation history."""
         await self.ensure_server_ready()
             
+        # First prepare the conversation outside the semaphore
         if conversation_id is None:
             conversation_id = await self.create_conversation()
         elif conversation_id not in self.conversations:
@@ -206,65 +230,90 @@ class TonicOllamaClient:
         messages.append(user_message)
         self.conversations[conversation_id].append(user_message)
 
-        try:
-            client = self.get_async_client()
-
+        # Use semaphore to limit concurrent model access
+        async with self._model_semaphore:
             if self.debug:
-                fancy_print(self.console, f"Sending chat request to model '{model}'", style="dim blue")
+                fancy_print(self.console, 
+                    f"Acquired model semaphore for chat with '{model}' ({self.get_available_model_slots()}/{self.concurrent_models} slots available)", 
+                    style="dim blue")
+            
+            try:
+                client = self.get_async_client()
 
-            response = await client.chat(
-                model=model,
-                messages=messages,
-                options={"temperature": temperature},
-                stream=False,
-            )
+                if self.debug:
+                    fancy_print(self.console, f"Sending chat request to model '{model}'", style="dim blue")
 
-            assistant_message = {
-                "role": "assistant",
-                "content": response["message"]["content"]
-            }
-            self.conversations[conversation_id].append(assistant_message)
+                response = await client.chat(
+                    model=model,
+                    messages=messages,
+                    options={"temperature": temperature},
+                    stream=False,
+                )
 
-            if self.debug:
-                fancy_print(self.console, f"Received response from model '{model}'", style="dim blue")
+                assistant_message = {
+                    "role": "assistant",
+                    "content": response["message"]["content"]
+                }
+                self.conversations[conversation_id].append(assistant_message)
 
-            return response
+                if self.debug:
+                    fancy_print(self.console, f"Received response from model '{model}'", style="dim blue")
 
-        except ResponseError as e:
-            fancy_print(self.console, f"Ollama API error: {str(e)}", style="red")
-            raise
-        except Exception as e:
-            fancy_print(self.console, f"Error in chat: {str(e)}", style="red")
-            raise
+                return response
+
+            except ResponseError as e:
+                fancy_print(self.console, f"Ollama API error: {str(e)}", style="red")
+                raise
+            except Exception as e:
+                fancy_print(self.console, f"Error in chat: {str(e)}", style="red")
+                raise
+            finally:
+                if self.debug:
+                    fancy_print(self.console, 
+                        f"Released model semaphore for chat with '{model}'", 
+                        style="dim blue")
 
     @retry(**API_RETRY_CONFIG)
     async def generate_embedding(self, model: str, text: str) -> List[float]:
         """Generate embeddings for given text."""
         await self.ensure_server_ready()
-            
-        try:
-            client = self.get_async_client()
-
+        
+        # Use semaphore to limit concurrent model access
+        async with self._model_semaphore:
             if self.debug:
-                fancy_print(self.console, f"Generating embeddings with model '{model}'", style="dim blue")
-
-            response = await client.embeddings(model=model, prompt=text)
+                fancy_print(self.console, 
+                    f"Acquired model semaphore for embeddings with '{model}' ({self.get_available_model_slots()}/{self.concurrent_models} slots available)", 
+                    style="dim blue")
             
-            if self.debug:
-                fancy_print(self.console, f"Generated embeddings with {len(response['embedding'])} dimensions", style="dim blue")
-            return response["embedding"]
-        except ResponseError as e:
-            fancy_print(self.console, f"Ollama API error: {str(e)}", style="red")
-            raise
-        except Exception as e:
-            fancy_print(self.console, f"Error generating embeddings: {str(e)}", style="red")
-            raise
+            try:
+                client = self.get_async_client()
+
+                if self.debug:
+                    fancy_print(self.console, f"Generating embeddings with model '{model}'", style="dim blue")
+
+                response = await client.embeddings(model=model, prompt=text)
+                
+                if self.debug:
+                    fancy_print(self.console, f"Generated embeddings with {len(response['embedding'])} dimensions", style="dim blue")
+                return response["embedding"]
+            except ResponseError as e:
+                fancy_print(self.console, f"Ollama API error: {str(e)}", style="red")
+                raise
+            except Exception as e:
+                fancy_print(self.console, f"Error generating embeddings: {str(e)}", style="red")
+                raise
+            finally:
+                if self.debug:
+                    fancy_print(self.console, 
+                        f"Released model semaphore for embeddings with '{model}'", 
+                        style="dim blue")
 
 def create_client(
     base_url: str = "http://localhost:11434",
     max_server_startup_attempts: int = 3,
     debug: bool = False,
     console: Optional[Console] = None,
+    concurrent_models: int = CONCURRENT_MODELS,  # This parameter is now effectively ignored
 ) -> TonicOllamaClient:
     """Create a pre-configured TonicOllama client."""
     if console is None:
@@ -272,17 +321,20 @@ def create_client(
     else:
         console_instance = console
 
+    # Always pass CONCURRENT_MODELS=1 regardless of what was requested
     return TonicOllamaClient(
         base_url=base_url,
         max_server_startup_attempts=max_server_startup_attempts,
         debug=debug,
         console=console_instance,
+        concurrent_models=CONCURRENT_MODELS,  # Always use the constant
     )
 
 __all__ = [
     "AsyncClient",
     "ChatResponse",
     "ClientConfig",
+    "CONCURRENT_MODELS",
     "EmbeddingsResponse",
     "Message",
     "OllamaServerNotRunningError",
