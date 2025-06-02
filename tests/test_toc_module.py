@@ -151,28 +151,21 @@ class TestTonicOllamaClientMethods:
 
     @pytest.mark.asyncio
     async def test_client_close_method(self, client_instance):
-        """Test the client's close method."""
+        """Test the client's close method (default: unload all configured models)."""
         client, mock_ollama_instance = client_instance
         
-        # Ensure the underlying httpx client mock exists if get_async_client was called
-        # If get_async_client was not called, self.async_client would be None
-        # For this test, let's assume get_async_client has been called to initialize self.async_client
-        client.get_async_client() # This initializes self.async_client with the mock_ollama_instance
+        client.get_async_client()
 
-        # Mock the _client.aclose method if the underlying client is an httpx client
-        # The mock_ollama_instance is the ollama.AsyncClient mock.
-        # We need to mock its _client attribute's aclose method.
-        mock_ollama_instance._client = AsyncMock() # Mock the internal httpx client
+        mock_ollama_instance._client = AsyncMock() 
         mock_ollama_instance._client.aclose = AsyncMock()
-
-        # Spy on the generate method of the mocked ollama.AsyncClient
         mock_ollama_instance.generate = AsyncMock()
 
-        await client.close()
-
-        # Verify generate was called for each default model to unload
-        # DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE is defined in tonic_ollama_client
+        # client.models_to_unload_on_close is already set by default or by constructor
+        # For this test, we rely on the default DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE
         from tonic_ollama_client import DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE
+        
+        await client.close() # Call without arguments
+
         assert mock_ollama_instance.generate.call_count == len(DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE)
         for model_name in DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE:
             mock_ollama_instance.generate.assert_any_call(
@@ -182,11 +175,35 @@ class TestTonicOllamaClientMethods:
                 keep_alive="0s"
             )
         
+        mock_ollama_instance._client.aclose.assert_called_once()
+        assert client.async_client is None
+
+    @pytest.mark.asyncio
+    async def test_client_close_method_specific_model(self, client_instance):
+        """Test closing the client and unloading a specific model."""
+        client, mock_ollama_instance = client_instance
+        client.get_async_client() # Initialize async_client
+
+        mock_ollama_instance._client = AsyncMock()
+        mock_ollama_instance._client.aclose = AsyncMock()
+        mock_ollama_instance.generate = AsyncMock()
+
+        specific_model_to_unload = "phi4:latest"
+        await client.close(model_to_unload=specific_model_to_unload)
+
+        # Verify generate was called only for the specific model
+        assert mock_ollama_instance.generate.call_count == 1
+        mock_ollama_instance.generate.assert_called_once_with(
+            model=specific_model_to_unload,
+            prompt=".",
+            options={"num_predict": 1},
+            keep_alive="0s"
+        )
+        
         # Verify the underlying httpx client's aclose was called
         mock_ollama_instance._client.aclose.assert_called_once()
-        
-        # Verify the client's async_client attribute is reset
         assert client.async_client is None
+
 
     @pytest.mark.asyncio
     async def test_client_close_method_no_async_client_initialized(self):
@@ -201,8 +218,8 @@ class TestTonicOllamaClientMethods:
         # No API calls should have been attempted.
 
     @pytest.mark.asyncio
-    async def test_client_close_method_custom_models_to_unload(self):
-        """Test close method with a custom list of models to unload."""
+    async def test_client_close_method_custom_models_to_unload(self, client_instance):
+        """Test close method with a custom list of models to unload (when called with no args)."""
         custom_models = ["custom_model1:latest", "custom_model2:latest"]
         
         with patch('tonic_ollama_client.AsyncClient') as MockedOllamaAsyncClient:
@@ -212,9 +229,9 @@ class TestTonicOllamaClientMethods:
             mock_ollama_instance._client.aclose = AsyncMock()
 
             client = TonicOllamaClient(debug=False, models_to_unload_on_close=custom_models)
-            client.get_async_client() # Initialize self.async_client
+            client.get_async_client()
 
-            await client.close()
+            await client.close() # Call without arguments to use the custom list
 
             assert mock_ollama_instance.generate.call_count == len(custom_models)
             for model_name in custom_models:
@@ -232,10 +249,19 @@ def test_create_client_default():
     client = create_client()
     assert isinstance(client, TonicOllamaClient)
     assert client.debug is False
+    from tonic_ollama_client import DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE
+    assert client.models_to_unload_on_close == DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE
 
 def test_create_client_custom():
     console = Console()
-    client = create_client(base_url="http://custom:1111", debug=True, console=console)
+    custom_unload_list = ["test_model:v1"]
+    client = create_client(
+        base_url="http://custom:1111", 
+        debug=True, 
+        console=console,
+        models_to_unload_on_close=custom_unload_list
+    )
     assert client.base_url == "http://custom:1111"
     assert client.debug is True
     assert client.console is console
+    assert client.models_to_unload_on_close == custom_unload_list

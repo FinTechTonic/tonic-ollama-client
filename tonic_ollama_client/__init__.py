@@ -83,7 +83,7 @@ class TonicOllamaClient:
         debug: bool = False,
         console: Optional[Console] = None,
         concurrent_models: int = CONCURRENT_MODELS,
-        models_to_unload_on_close: Optional[List[str]] = None, # New parameter
+        models_to_unload_on_close: Optional[List[str]] = None,
     ):
         if console is None:
             console = Console()
@@ -116,7 +116,7 @@ class TonicOllamaClient:
 
         if self.debug:
             fancy_print(self.console, 
-                f"Initialized TonicOllamaClient (base_url={base_url}, concurrent_models={self.concurrent_models})", 
+                f"Initialized TonicOllamaClient (base_url={base_url}, concurrent_models={self.concurrent_models}, default_unload_list_size={len(self.models_to_unload_on_close)})", 
                 style="dim blue")
 
     def get_async_client(self) -> AsyncClient:
@@ -311,27 +311,34 @@ class TonicOllamaClient:
                         f"Released model semaphore for embeddings with '{model}'", 
                         style="dim blue")
 
-    async def close(self):
+    async def close(self, model_to_unload: Optional[str] = None):
         """
-        Attempt to unload specified models and close the underlying HTTP client.
+        Attempt to unload specified model(s) and close the underlying HTTP client.
+        If model_to_unload is specified, only that model is targeted.
+        Otherwise, models from self.models_to_unload_on_close are targeted.
         This is a best-effort operation.
         """
         if self.debug:
-            fancy_print(self.console, "Attempting to close TonicOllamaClient and unload models...", style="dim blue")
+            if model_to_unload:
+                fancy_print(self.console, f"Attempting to close TonicOllamaClient and unload specific model: {model_to_unload}...", style="dim blue")
+            else:
+                fancy_print(self.console, f"Attempting to close TonicOllamaClient and unload default models ({len(self.models_to_unload_on_close)})...", style="dim blue")
 
-        ollama_client_instance = self.async_client # Use the instance variable
+        ollama_client_instance = self.async_client
 
         if ollama_client_instance:
-            for model_name in self.models_to_unload_on_close:
+            models_to_attempt_unload = [model_to_unload] if model_to_unload else self.models_to_unload_on_close
+            
+            for model_name in models_to_attempt_unload:
+                if not model_name: continue # Should not happen if logic is correct, but as a safeguard
                 try:
                     if self.debug:
                         fancy_print(self.console, f"  Attempting to unload model: {model_name} (keep_alive='0s')", style="dim blue")
-                    # Make a minimal request with keep_alive: "0s"
                     await ollama_client_instance.generate(
                         model=model_name,
-                        prompt=".", # Minimal non-empty prompt
-                        options={"num_predict": 1}, # Predict only 1 token
-                        keep_alive="0s" # Signal to unload
+                        prompt=".", 
+                        options={"num_predict": 1}, 
+                        keep_alive="0s"
                     )
                     if self.debug:
                         fancy_print(self.console, f"    Unload request sent for {model_name}.", style="dim green")
@@ -345,7 +352,6 @@ class TonicOllamaClient:
                     if self.debug:
                         fancy_print(self.console, f"    Unexpected error during unload attempt for model {model_name}: {e}", style="dim red")
             
-            # Close the underlying httpx client
             if hasattr(ollama_client_instance, '_client') and ollama_client_instance._client:
                 try:
                     if self.debug:
@@ -368,7 +374,8 @@ def create_client(
     max_server_startup_attempts: int = 3,
     debug: bool = False,
     console: Optional[Console] = None,
-    concurrent_models: int = CONCURRENT_MODELS,  # This parameter is now effectively ignored
+    concurrent_models: int = CONCURRENT_MODELS,
+    models_to_unload_on_close: Optional[List[str]] = None, # Added models_to_unload_on_close
 ) -> TonicOllamaClient:
     """Create a pre-configured TonicOllama client."""
     if console is None:
@@ -376,13 +383,13 @@ def create_client(
     else:
         console_instance = console
 
-    # Always pass CONCURRENT_MODELS=1 regardless of what was requested
     return TonicOllamaClient(
         base_url=base_url,
         max_server_startup_attempts=max_server_startup_attempts,
         debug=debug,
         console=console_instance,
-        concurrent_models=CONCURRENT_MODELS,  # Always use the constant
+        concurrent_models=CONCURRENT_MODELS,
+        models_to_unload_on_close=models_to_unload_on_close, # Pass through
     )
 
 __all__ = [

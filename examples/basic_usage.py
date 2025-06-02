@@ -5,7 +5,7 @@ from rich.panel import Panel
 from rich.live import Live
 from rich.progress import Progress as RichProgress, BarColumn, TextColumn, TimeRemainingColumn
 from rich.text import Text
-import questionary # Added questionary
+import questionary
 from typing import Optional, List
 import ollama # For synchronously listing models
 
@@ -13,7 +13,6 @@ import ollama # For synchronously listing models
 DEFAULT_AVAILABLE_MODELS: List[str] = ["llama3.1:latest", "phi4:latest", "qwen2:7b", "mistral:latest"]
 CUSTOM_MODEL_OPTION = "Enter Custom Model Name..."
 
-# Define steps for the progress bar - updated
 PROGRESS_STEPS = [
     "0. Selecting Model",
     "1. Initializing Client",
@@ -37,7 +36,7 @@ def get_ollama_models_sync() -> List[str]:
         models_info = ollama.list()
         if models_info and 'models' in models_info:
             return sorted([model['name'] for model in models_info['models'] if 'name' in model])
-    except Exception: # Broad exception to catch any issue with ollama.list()
+    except Exception:
         return []
     return []
 
@@ -65,17 +64,17 @@ async def main():
         "Please select a model to use for this session:",
         choices=model_choices,
         use_arrow_keys=True,
-        style=questionary.Style([('selected', 'fg:#673ab7 bold'), ('highlighted', 'fg:#673ab7 bold')]), # Basic styling
+        style=questionary.Style([('selected', 'fg:#673ab7 bold'), ('highlighted', 'fg:#673ab7 bold')]),
     ).ask_async()
 
     if selected_model_or_custom == CUSTOM_MODEL_OPTION:
         MODEL_NAME = await questionary.text(
             "Enter the custom model name (e.g., 'my-model:latest'):"
         ).ask_async()
-        if not MODEL_NAME: # User pressed Esc or entered nothing
+        if not MODEL_NAME:
             console.print("[bold red]No custom model name entered. Exiting.[/bold red]")
             return
-    elif selected_model_or_custom is None: # User pressed Esc
+    elif selected_model_or_custom is None:
         console.print("[bold red]No model selected. Exiting.[/bold red]")
         return
     else:
@@ -84,7 +83,6 @@ async def main():
     console.print(f"\nUsing model: [bold magenta]{MODEL_NAME}[/bold magenta]\n")
     # --- End Model Selection ---
 
-    # Rich components for Live display
     progress_bar = RichProgress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -94,47 +92,64 @@ async def main():
     )
     overall_task = progress_bar.add_task(PROGRESS_STEPS[0], total=TOTAL_STEPS, visible=True)
     
-    status_log_text = Text("", justify="left")
+    status_display_area = Text("", justify="left") 
     
     live_layout = Group(
         Panel(f"Tonic Ollama Client - Basic Usage Example", 
               title="[bold green]Example Script[/bold green]", expand=False, border_style="green",
               subtitle=f"Selected Model: [bold magenta]{MODEL_NAME}[/bold magenta]"),
         progress_bar,
-        Panel(status_log_text, title="[bold blue]Status Log[/bold blue]", border_style="blue", expand=False)
+        status_display_area
     )
 
     client = None
+    
+    current_status_lines: List[Text] = []
 
     with Live(live_layout, console=console, refresh_per_second=10, vertical_overflow="visible") as live:
         
+        def _render_status_display():
+            new_content = Text()
+            for i, line_obj in enumerate(current_status_lines):
+                new_content.append_text(line_obj)
+                if i < len(current_status_lines) - 1:
+                    new_content.append("\n")
+            
+            status_display_area.truncate(0)
+            status_display_area.append_text(new_content)
+
         def update_status(message: str, style: str = "white", step_index: Optional[int] = None, advance: bool = True):
             nonlocal overall_task
             if step_index is not None:
+                current_status_lines.clear() 
                 current_description = PROGRESS_STEPS[step_index]
                 if advance:
                     progress_bar.update(overall_task, description=current_description, advance=1)
                 else:
                     progress_bar.update(overall_task, description=current_description)
-
-                status_log_text.append(f"\n[bold cyan]{current_description}[/bold cyan]\n", style="bold cyan")
+                current_status_lines.append(Text.from_markup(f"[bold cyan]{current_description}[/bold cyan]"))
             
-            status_log_text.append(f"   {message}\n", style=style)
+            if step_index is None and len(current_status_lines) > 1:
+                current_status_lines[-1] = Text(f"   {message}", style=style)
+            else:
+                current_status_lines.append(Text(f"   {message}", style=style))
+
+            _render_status_display()
             live.refresh()
 
-        def log_output(label: str, content: str, style: str = "dim white"):
-            status_log_text.append(f"     [bold]{label}:[/bold] {content}\n", style=style)
+        def log_output(label: str, content: str, style: str = "dim white", max_content_len: int = 70):
+            if len(content) > max_content_len:
+                content = content[:max_content_len-3] + "..."
+            current_status_lines.append(Text.from_markup(f"     [bold]{label}:[/bold] {content}", style=style))
+            _render_status_display()
             live.refresh()
 
         try:
-            progress_bar.update(overall_task, advance=1) 
-            status_log_text.append(f"[bold cyan]{PROGRESS_STEPS[0]}[/bold cyan]\n", style="bold cyan")
-            log_output("Selected Model", MODEL_NAME, style="magenta")
+            update_status(f"Selected Model: [magenta]{MODEL_NAME}[/magenta]", step_index=0, advance=True)
 
             update_status("Creating client instance...", step_index=1)
             client = toc.create_client(debug=False)
-            log_output("Base URL", client.base_url)
-            log_output("Concurrent Models Limit", str(client.concurrent_models))
+            update_status(f"Client created (URL: {client.base_url}).", style="green", advance=False)
 
             update_status("Ensuring Ollama server is responsive...", step_index=2)
             await client.ensure_server_ready()
@@ -143,10 +158,10 @@ async def main():
             update_status(f"Checking availability of model '{MODEL_NAME}'...", step_index=3)
             try:
                 await client.get_async_client().show(model=MODEL_NAME)
-                update_status(f"Model '{MODEL_NAME}' is available on the server.", style="green", advance=False)
+                update_status(f"Model '{MODEL_NAME}' is available.", style="green", advance=False)
             except toc.ResponseError as e:
                 if e.status_code == 404:
-                    update_status(f"Warning: Model '{MODEL_NAME}' not found. Chat/embedding may fail or trigger pull.", style="yellow", advance=False)
+                    update_status(f"Warning: Model '{MODEL_NAME}' not found.", style="yellow", advance=False)
                     log_output("Suggestion", f"Run: ollama pull {MODEL_NAME}", style="dim yellow")
                 else:
                     raise
@@ -158,14 +173,14 @@ async def main():
                 message=user_msg_basic,
                 system_prompt="You are a helpful AI assistant."
             )
-            log_output("User (Basic Chat)", user_msg_basic)
-            log_output(f"AI ({MODEL_NAME})", chat_response['message']['content'])
+            log_output("User", user_msg_basic)
+            log_output("AI", chat_response['message']['content'])
 
-            update_status("Creating a new conversation 'my-live-test-conversation'...", step_index=5)
+            update_status("Creating conversation 'my-live-test-conversation'...", step_index=5)
             conv_id = await client.create_conversation("my-live-test-conversation")
-            log_output("Conversation ID", conv_id)
+            log_output("Conv ID", conv_id)
 
-            update_status(f"Sending first message to '{conv_id}'...", step_index=6)
+            update_status(f"Sending message to '{conv_id}'...", step_index=6)
             user_msg_conv1 = "Hello! My favorite color is blue."
             await client.chat(
                 model=MODEL_NAME,
@@ -173,26 +188,21 @@ async def main():
                 conversation_id=conv_id,
                 system_prompt="Remember details about the user."
             )
-            log_output("User (Conv Msg 1)", user_msg_conv1)
+            log_output("User", user_msg_conv1)
             
-            update_status(f"Sending second message to '{conv_id}' to test context...", step_index=7)
+            update_status(f"Querying context in '{conv_id}'...", step_index=7)
             user_msg_conv2 = "What is my favorite color?"
             response_conv = await client.chat(
                 model=MODEL_NAME,
                 message=user_msg_conv2,
                 conversation_id=conv_id
             )
-            log_output("User (Conv Msg 2)", user_msg_conv2)
-            log_output(f"AI ({MODEL_NAME})", response_conv['message']['content'])
+            log_output("User", user_msg_conv2)
+            log_output("AI", response_conv['message']['content'])
 
             update_status(f"Retrieving history for '{conv_id}'...", step_index=8)
             history = client.get_conversation(conv_id)
-            log_output("History Length", str(len(history)))
-            if history and len(history) >=2 :
-                log_output("Last User Msg in History", history[-2]['content'][:50] + "...")
-                log_output("Last AI Msg in History", history[-1]['content'][:50] + "...")
-            elif history:
-                 log_output("Last Msg in History", history[-1]['content'][:50] + "...")
+            log_output("History items", str(len(history)))
 
             update_status(f"Clearing conversation '{conv_id}'...", step_index=9)
             client.clear_conversation(conv_id)
@@ -200,7 +210,7 @@ async def main():
 
             update_status(f"Deleting conversation '{conv_id}'...", step_index=10)
             client.delete_conversation(conv_id)
-            log_output("Conversation exists after delete?", str(conv_id in client.list_conversations()))
+            log_output("Exists after delete?", str(conv_id in client.list_conversations()))
 
             update_status(f"Generating embeddings with '{MODEL_NAME}'...", step_index=11)
             embedding_text = "Ollama is a cool tool for running LLMs locally."
@@ -208,21 +218,20 @@ async def main():
                 model=MODEL_NAME,
                 text=embedding_text
             )
-            log_output("Embedding Text", embedding_text)
-            log_output("Embedding Dimensions", str(len(embedding)))
-            log_output("Embedding (first 3)", str(embedding[:3]) + "...")
+            log_output("Embedding Dims", str(len(embedding)))
+            update_status(f"Embeddings generated ({len(embedding)} dims).", style="green", advance=False)
 
             update_status("Example script completed successfully!", style="bold green", advance=False)
 
         except toc.OllamaServerNotRunningError as e:
             update_status(f"Ollama Server Error: {e}", style="bold red", advance=False)
-            status_log_text.append("   Please ensure the Ollama server is running ('ollama serve') and accessible.\n", style="red")
+            log_output("Action", "Please ensure the Ollama server is running ('ollama serve') and accessible.", style="red")
         except toc.ResponseError as e:
             update_status(f"Ollama API Response Error (Status {e.status_code}): {e.error}", style="bold red", advance=False)
         except ConnectionError as e:
             update_status(f"Connection Error: {e}", style="bold red", advance=False)
-            status_log_text.append("   Could not connect to the Ollama server. Check network and server status.\n", style="red")
-        except Exception as e: # Catch any other exception, including KeyboardInterrupt from questionary
+            log_output("Details", "Could not connect to the Ollama server. Check network and server status.", style="red")
+        except Exception as e:
             if isinstance(e, KeyboardInterrupt):
                 update_status("Model selection or input cancelled by user.", style="bold yellow", advance=False)
             else:
@@ -236,19 +245,24 @@ async def main():
                               step_index=12 if is_last_step_pending else None, 
                               advance=is_last_step_pending)
                 await client.close()
-                update_status("Client closed.", style="blue", advance=False)
+                current_status_lines.append(Text("   Client closed.", style="blue"))
+                _render_status_display()
+                live.refresh()
             else:
                  if is_last_step_pending and current_progress < 12 :
                     progress_bar.update(overall_task, description=PROGRESS_STEPS[12], advance=1)
-                 update_status("Client not initialized or cleanup skipped.", style="dim blue", advance=False)
-
+                 current_status_lines.append(Text("   Client not initialized or cleanup skipped.", style="dim blue"))
+                 _render_status_display()
+                 live.refresh()
+            
             final_completed_steps = progress_bar.tasks[0].completed if progress_bar.tasks else 0
             if final_completed_steps < TOTAL_STEPS:
                  progress_bar.update(overall_task, completed=TOTAL_STEPS, description="Finished.")
             elif progress_bar.tasks:
                  progress_bar.update(overall_task, description="Finished.")
             
-            status_log_text.append("\n[bold blue]End of example.[/bold blue]\n")
+            current_status_lines.append(Text("\n[bold blue]End of example.[/bold blue]"))
+            _render_status_display()
             live.refresh()
 
 if __name__ == "__main__":
