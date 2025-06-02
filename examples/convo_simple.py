@@ -361,7 +361,7 @@ async def main_conversation_loop(
     )
     
     layout["progress_area"].update(progress_bar)
-    layout["footer"].update(Text("Starting conversation...", justify="center"))
+    layout["footer"].update(Text(f"Tokens/sec: 0.0 | Total tokens: 0", justify="center"))
     
     # Generate conversation IDs
     persona1_conv_id = f"persona_{persona1_name.replace(' ', '_').lower()}_{get_timestamp()}"
@@ -394,6 +394,13 @@ async def main_conversation_loop(
     persona1_generated_tokens = 0
     persona2_generated_tokens = 0
     
+    # Initialize token rate tracking variables
+    total_tokens_generated = 0
+    token_rate_start_time = datetime.datetime.now()
+    current_token_rate = 0.0
+    token_rate_update_interval = 2.0  # seconds between token rate updates
+    last_token_rate_update = datetime.datetime.now()
+    
     # Track accumulated content for streaming log batches - moved earlier to ensure initialization
     accumulated_response = ""
     # Initialize last_log_time at function start to avoid the error
@@ -406,15 +413,15 @@ async def main_conversation_loop(
     # Adjust truncation based on console width
     def calculate_max_display_length():
         """Dynamically calculate max display length based on console dimensions"""
-        # Increase base value for larger displays
-        base_length = 1200
+        # Reduce base value to make truncation happen sooner
+        base_length = 800
         
         # Adjust based on console width - wider consoles can display more text
         # Get the actual console width, with a reasonable default if detection fails
         try:
             width = console.width or 80
-            # Increase the multiplier to allow more text to be displayed
-            return min(max(base_length, width * 16), 4000)
+            # Reduce the multiplier to make truncation happen sooner
+            return min(max(base_length, width * 10), 2000)
         except Exception:
             return base_length
     
@@ -482,9 +489,6 @@ async def main_conversation_loop(
                 # Reset accumulators for this turn
                 full_ai_message_content = ""
                 full_ai_thinking_content = ""
-                accumulated_response = ""
-                # Reset the log timer for this turn
-                last_log_time = datetime.datetime.now()
                 
                 # Determine if we expect 'thinking' field from qwen3 models
                 expect_separate_thinking_field = "qwen3" in MODEL_NAME.lower()
@@ -636,17 +640,33 @@ async def main_conversation_loop(
                     )
                     current_turn_logged = True
                 
+                # Calculate final tokens for this turn
                 generated_tokens_this_turn = count_tokens(full_ai_message_content)
                 if full_ai_thinking_content: # Add thinking tokens if they came separately
                     generated_tokens_this_turn += count_tokens(full_ai_thinking_content)
 
+                # Update total tokens count
+                total_tokens_generated += generated_tokens_this_turn
+                
+                # Recalculate token rate
+                current_time = datetime.datetime.now()
+                time_elapsed = (current_time - token_rate_start_time).total_seconds()
+                if time_elapsed > 0:
+                    current_token_rate = total_tokens_generated / time_elapsed
+                
+                # Update the footer with final token rate for this turn
+                layout["footer"].update(Text(
+                    f"Tokens/sec: {current_token_rate:.1f} | Total tokens: {total_tokens_generated:,}",
+                    justify="center", style="bold cyan"
+                ))
+                
                 if current_speaker == persona1_name:
                     persona1_generated_tokens += generated_tokens_this_turn
                 else:
                     persona2_generated_tokens += generated_tokens_this_turn
 
                 # Final display for the turn
-                # Recalculate truncation length based on current console dimensions
+                # Recalculate truncation based on current console width
                 MAX_DISPLAY_LENGTH = calculate_max_display_length()
                 
                 final_display_elements_for_panel = [Text(f"{turn_info} - {speaker_display_name}", style="bold green")]
@@ -712,7 +732,13 @@ async def main_conversation_loop(
             if progress_bar and overall_task is not None:
                  progress_bar.update(overall_task, completed=max_turns if max_turns != -1 else current_turn, description="Conversation Ended", total=max_turns if max_turns != -1 else current_turn)
             
-            layout["footer"].update(Text(f"Conversation ended. Log saved to: {log_filename}", style="bold green", justify="center"))
+            # Update footer with final token statistics
+            elapsed_time = (datetime.datetime.now() - token_rate_start_time).total_seconds()
+            final_token_rate = total_tokens_generated / elapsed_time if elapsed_time > 0 else 0
+            layout["footer"].update(Text(
+                f"Conversation ended. Avg tokens/sec: {final_token_rate:.1f} | Total tokens: {total_tokens_generated:,} | Log: {log_filename}",
+                justify="center", style="bold green"
+            ))
             live_display.refresh()
             
             # No need to create a new log file since we've been updating it incrementally
