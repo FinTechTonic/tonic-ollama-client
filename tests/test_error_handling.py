@@ -1,7 +1,7 @@
 import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, patch
-from tonic_ollama_client import TonicOllamaClient, ResponseError, ModelNotReadyError
+from tonic_ollama_client import TonicOllamaClient, ResponseError, OllamaServerNotRunningError # Replaced ModelNotReadyError
 import asyncio
 
 APPROVED_MODELS = ["llama3.1:latest", "phi4:latest", "qwen2:7b"]
@@ -17,17 +17,21 @@ class TestErrorHandling:
             mock_instance = MockedAsyncClient.return_value
             mock_instance.chat = AsyncMock()
             mock_instance.embeddings = AsyncMock()
-            mock_instance.list = AsyncMock()
-            mock_instance.pull = AsyncMock()
+            # mock_instance.list = AsyncMock() # No longer directly used by client for readiness
+            # mock_instance.pull = AsyncMock() # No longer directly used by client for readiness
             
-            client = TonicOllamaClient(debug=True)
-            yield client, mock_instance
+            # Patch _is_ollama_server_running_sync for tests that need to control server status
+            with patch.object(TonicOllamaClient, '_is_ollama_server_running_sync', return_value=True) as mock_server_check:
+                client = TonicOllamaClient(debug=True)
+                # Yield the mock_server_check as well if tests need to manipulate it
+                yield client, mock_instance, mock_server_check # Corrected mock_ollama to mock_instance
     
     @pytest.mark.asyncio
     async def test_chat_connection_error(self, mock_client_with_errors):
         """Test chat with connection error."""
-        client, mock_ollama = mock_client_with_errors
+        client, mock_ollama, _ = mock_client_with_errors # Unpack mock_server_check
         
+        # Simulate server check passes, but chat fails
         mock_ollama.chat.side_effect = ConnectionError("Connection refused")
         
         with pytest.raises(ConnectionError):
@@ -36,7 +40,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_chat_timeout_error(self, mock_client_with_errors):
         """Test chat with timeout error."""
-        client, mock_ollama = mock_client_with_errors
+        client, mock_ollama, _ = mock_client_with_errors
         
         mock_ollama.chat.side_effect = TimeoutError("Request timed out")
         
@@ -46,7 +50,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_chat_response_error_various_codes(self, mock_client_with_errors):
         """Test chat with various HTTP response errors."""
-        client, mock_ollama = mock_client_with_errors
+        client, mock_ollama, _ = mock_client_with_errors
         
         error_scenarios = [
             (404, "Model not found"),
@@ -67,7 +71,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_embedding_connection_error(self, mock_client_with_errors):
         """Test embedding generation with connection error."""
-        client, mock_ollama = mock_client_with_errors
+        client, mock_ollama, _ = mock_client_with_errors
         
         mock_ollama.embeddings.side_effect = ConnectionError("Network unreachable")
         
@@ -77,7 +81,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_embedding_response_error(self, mock_client_with_errors):
         """Test embedding generation with response error."""
-        client, mock_ollama = mock_client_with_errors
+        client, mock_ollama, _ = mock_client_with_errors
         
         mock_ollama.embeddings.side_effect = ResponseError("Embedding failed", 422)
         
@@ -86,67 +90,10 @@ class TestErrorHandling:
         
         assert exc_info.value.status_code == 422
     
-    @pytest.mark.asyncio
-    async def test_check_model_ready_list_error(self, mock_client_with_errors):
-        """Test check_model_ready with list API error."""
-        client, mock_ollama = mock_client_with_errors
-        client.max_readiness_attempts = 1
-
-        mock_ollama.list.side_effect = ResponseError("List failed", 503)
-        mock_ollama.chat.return_value = {"message": {"content": "Simulated chat response"}}
-        
-        with pytest.raises(ModelNotReadyError):
-            await client.check_model_ready("phi4:latest")
+    # test_check_model_ready_chat_error is removed as check_model_ready is gone
+    # and ensure_server_ready doesn't involve chat.
     
-    @pytest.mark.asyncio
-    async def test_check_model_ready_pull_error(self, mock_client_with_errors):
-        """Test check_model_ready with pull API error."""
-        client, mock_ollama = mock_client_with_errors
-        client.max_readiness_attempts = 1
-
-        mock_ollama.list.return_value = {"models": []}
-        mock_ollama.pull.side_effect = ResponseError("Pull failed", 404)
-        mock_ollama.chat.return_value = {"message": {"content": "Simulated chat response"}}
-        
-        with pytest.raises(ModelNotReadyError):
-            await client.check_model_ready("qwen2:7b")
-    
-    @pytest.mark.asyncio
-    async def test_check_model_ready_chat_error(self, mock_client_with_errors):
-        """Test check_model_ready with chat API error during responsiveness check."""
-        client, mock_ollama = mock_client_with_errors
-        
-        mock_ollama.list.return_value = {
-            "models": [{"name": "llama3.1:latest"}]
-        }
-        
-        mock_ollama.chat.side_effect = ResponseError("Chat failed", 500)
-        
-        with pytest.raises(ModelNotReadyError):
-            await client.check_model_ready("llama3.1:latest")
-    
-    @pytest.mark.asyncio
-    async def test_model_not_ready_error_details(self, mock_client_with_errors):
-        """Test ModelNotReadyError with specific details."""
-        client, mock_ollama = mock_client_with_errors
-        client.max_readiness_attempts = 1
-
-        mock_ollama.list.return_value = {
-            "models": [{"name": "llama3.1:latest"}]
-        }
-        mock_ollama.chat.return_value = {
-            "message": {"content": "I'm not ready"}
-        }
-
-        with pytest.raises(ModelNotReadyError) as exc_info:
-            await client.check_model_ready("llama3.1:latest")
-        
-        error = exc_info.value
-        assert error.model_name == "llama3.1:latest"
-        assert error.status_code == 400
-        assert "llama3.1:latest" in str(error)
-        assert "Failed to make model ready after multiple attempts" in str(error)
-        mock_ollama.chat.assert_called_once()
+    # test_model_not_ready_error_details is removed as ModelNotReadyError is gone.
 
     @pytest.mark.asyncio
     async def test_conversation_errors(self):
@@ -165,19 +112,23 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_retry_mechanism_exhaustion(self, mock_client_with_errors):
         """Test that retry mechanism eventually gives up."""
-        client, mock_ollama = mock_client_with_errors
+        client, mock_ollama, mock_server_check = mock_client_with_errors
+        
+        # Ensure ensure_server_ready thinks server is up initially
+        mock_server_check.return_value = True
         
         mock_ollama.chat.side_effect = ConnectionError("Persistent connection error")
         
         with pytest.raises(ConnectionError):
             await client.chat(model=DEFAULT_TEST_MODEL, message="test")
         
-        assert mock_ollama.chat.call_count > 1
+        # API_RETRY_CONFIG has stop_after_attempt(3)
+        assert mock_ollama.chat.call_count == 3 
     
     @pytest.mark.asyncio
     async def test_malformed_api_responses(self, mock_client_with_errors):
         """Test handling of malformed API responses."""
-        client, mock_ollama = mock_client_with_errors
+        client, mock_ollama, _ = mock_client_with_errors
         
         mock_ollama.chat.return_value = {"invalid": "response"}
         
@@ -195,19 +146,19 @@ class TestErrorHandling:
         mock_ollama.embeddings.reset_mock()
         mock_ollama.embeddings.return_value = {"embedding": [0.1,0.2]}
         
-        mock_ollama.list.side_effect = TypeError("List call returned unexpected data type")
-        
-        mock_ollama.pull.return_value = {"status": "success"} 
-
-        client.max_readiness_attempts = 1
-        
-        with pytest.raises(ModelNotReadyError):
-             await client.check_model_ready(DEFAULT_TEST_MODEL)
+        # The following part tested check_model_ready with list/pull errors,
+        # which is no longer relevant. New tests for ensure_server_ready are needed.
+        # For example, test ensure_server_ready when _is_ollama_server_running_sync returns False repeatedly.
+        # mock_ollama.list.side_effect = TypeError("List call returned unexpected data type")
+        # mock_ollama.pull.return_value = {"status": "success"} 
+        # client.max_server_startup_attempts = 1 # Use new attribute name
+        # with pytest.raises(OllamaServerNotRunningError): # Expect server error now
+        #      await client.ensure_server_ready() 
     
     @pytest.mark.asyncio
     async def test_unexpected_exceptions(self, mock_client_with_errors):
         """Test handling of unexpected exceptions."""
-        client, mock_ollama = mock_client_with_errors
+        client, mock_ollama, _ = mock_client_with_errors
         
         mock_ollama.chat.side_effect = RuntimeError("Unexpected error")
         
@@ -220,36 +171,26 @@ class TestErrorHandling:
             await client.generate_embedding(model=DEFAULT_TEST_MODEL, text="test")
     
     @pytest.mark.asyncio
-    async def test_partial_failures_in_check_model_ready(self, mock_client_with_errors):
-        """Test partial failures in check_model_ready workflow."""
-        client, mock_ollama = mock_client_with_errors
-        client.max_readiness_attempts = 2
+    async def test_ensure_server_ready_server_not_running(self, mock_client_with_errors):
+        """Test ensure_server_ready when server is initially not running."""
+        client, _, mock_server_check = mock_client_with_errors
+        
+        mock_server_check.return_value = False # Simulate server is not running
+        client.max_server_startup_attempts = 2 # Set for the test
+        
+        with pytest.raises(OllamaServerNotRunningError):
+            await client.ensure_server_ready()
+        
+        assert mock_server_check.call_count == 2
 
-        list_call_count = 0
-        def list_side_effect(*args, **kwargs):
-            nonlocal list_call_count
-            list_call_count += 1
-            if list_call_count == 1:
-                return {"models": []}
-            else:
-                return {"models": [{"name": "llama3.1:latest"}]}
+    @pytest.mark.asyncio
+    async def test_ensure_server_ready_becomes_available(self, mock_client_with_errors):
+        """Test ensure_server_ready when server becomes available after an attempt."""
+        client, _, mock_server_check = mock_client_with_errors
 
-        chat_call_count = 0
-        def chat_side_effect(*args, **kwargs):
-            nonlocal chat_call_count
-            chat_call_count += 1
-            if chat_call_count == 1:
-                return {"message": {"content": "STILL LOADING..."}}
-            else:
-                return {"message": {"content": "READY"}}
+        # Simulate server not running on first call, then running on second
+        mock_server_check.side_effect = [False, True]
+        client.max_server_startup_attempts = 2
 
-
-        mock_ollama.list.side_effect = list_side_effect
-        mock_ollama.pull.side_effect = ResponseError("Pull failed", 404)
-        mock_ollama.chat.side_effect = chat_side_effect
-
-        await client.check_model_ready("llama3.1:latest")
-
-        assert mock_ollama.list.call_count >= 2
-        mock_ollama.pull.assert_called()
-        assert mock_ollama.chat.call_count >= 2
+        await client.ensure_server_ready() # Should pass
+        assert mock_server_check.call_count == 2
