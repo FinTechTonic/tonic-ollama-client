@@ -27,7 +27,7 @@ from tenacity import (
 )
 
 # Constants
-CONCURRENT_MODELS = 1  # Only one model can be loaded at a time due to system constraints
+CONCURRENT_MODELS = 1  # Only one model can be loaded by default
 DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE = ["llama3.1:latest", "phi4:latest", "qwen2:7b", "mistral:latest"] # Models to attempt to unload
 OLLAMA_SERVER_NOT_RUNNING_MESSAGE = """
 [bold red]Ollama server is not running or not responsive at {base_url}.[/bold red]
@@ -375,7 +375,7 @@ def create_client(
     debug: bool = False,
     console: Optional[Console] = None,
     concurrent_models: int = CONCURRENT_MODELS,
-    models_to_unload_on_close: Optional[List[str]] = None, # Added models_to_unload_on_close
+    models_to_unload_on_close: Optional[List[str]] = None,
 ) -> TonicOllamaClient:
     """Create a pre-configured TonicOllama client."""
     if console is None:
@@ -392,6 +392,17 @@ def create_client(
         models_to_unload_on_close=models_to_unload_on_close, # Pass through
     )
 
+def get_ollama_models_sync() -> List[str]:
+    """Synchronously fetches locally available Ollama models."""
+    try:
+        import ollama
+        models_info = ollama.list()
+        if models_info and 'models' in models_info:
+            return sorted([model['name'] for model in models_info['models'] if 'name' in model])
+    except Exception:
+        return []
+    return []
+
 __all__ = [
     "AsyncClient",
     "ChatResponse",
@@ -403,6 +414,7 @@ __all__ = [
     "ResponseError",
     "TonicOllamaClient",
     "create_client",
+    "get_ollama_models_sync",
     "fancy_print",
 ]
 

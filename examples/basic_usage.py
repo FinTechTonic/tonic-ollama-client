@@ -7,7 +7,6 @@ from rich.progress import Progress as RichProgress, BarColumn, TextColumn, TimeR
 from rich.text import Text
 import questionary
 from typing import Optional, List
-import ollama # For synchronously listing models
 
 # Configuration
 DEFAULT_AVAILABLE_MODELS: List[str] = ["llama3.1:latest", "phi4:latest", "qwen2:7b", "mistral:latest"]
@@ -30,16 +29,6 @@ PROGRESS_STEPS = [
 ]
 TOTAL_STEPS = len(PROGRESS_STEPS)
 
-def get_ollama_models_sync() -> List[str]:
-    """Synchronously fetches locally available Ollama models."""
-    try:
-        models_info = ollama.list()
-        if models_info and 'models' in models_info:
-            return sorted([model['name'] for model in models_info['models'] if 'name' in model])
-    except Exception:
-        return []
-    return []
-
 async def main():
     console = Console()
     MODEL_NAME: str = ""
@@ -47,7 +36,7 @@ async def main():
     # --- Model Selection Step ---
     console.print(Panel("Welcome to the Tonic Ollama Client Example!", title="[bold green]Setup[/bold green]", expand=False))
     
-    fetched_models = get_ollama_models_sync()
+    fetched_models = toc.get_ollama_models_sync()
     
     model_choices = []
     if fetched_models:
@@ -186,10 +175,12 @@ async def main():
                 model=MODEL_NAME,
                 message=user_msg_conv1,
                 conversation_id=conv_id,
-                system_prompt="Remember details about the user."
+                system_prompt="Remember details about the user. Be friendly and conversational."
             )
             log_output("User", user_msg_conv1)
-            
+            # AI response for this turn is implicitly stored in conversation history by the client.
+            # We'll see it when we retrieve history or in the next AI turn.
+
             update_status(f"Querying context in '{conv_id}'...", step_index=7)
             user_msg_conv2 = "What is my favorite color?"
             response_conv = await client.chat(
@@ -199,6 +190,28 @@ async def main():
             )
             log_output("User", user_msg_conv2)
             log_output("AI", response_conv['message']['content'])
+
+            # Add more conversational turns
+            user_msg_conv3 = "Thanks! Based on my favorite color, can you suggest a type of flower I might like?"
+            update_status(f"Asking follow-up in '{conv_id}'...", advance=False) # Keep current step, just update message
+            response_conv3 = await client.chat(
+                model=MODEL_NAME,
+                message=user_msg_conv3,
+                conversation_id=conv_id
+            )
+            log_output("User", user_msg_conv3)
+            log_output("AI", response_conv3['message']['content'])
+
+            user_msg_conv4 = "That's a good suggestion. What about a type of car that might suit someone who likes blue?"
+            update_status(f"Asking another follow-up in '{conv_id}'...", advance=False)
+            response_conv4 = await client.chat(
+                model=MODEL_NAME,
+                message=user_msg_conv4,
+                conversation_id=conv_id
+            )
+            log_output("User", user_msg_conv4)
+            log_output("AI", response_conv4['message']['content'])
+
 
             update_status(f"Retrieving history for '{conv_id}'...", step_index=8)
             history = client.get_conversation(conv_id)
@@ -237,31 +250,41 @@ async def main():
             else:
                 update_status(f"An unexpected error occurred: {type(e).__name__}: {e}", style="bold red", advance=False)
         finally:
-            current_progress = progress_bar.tasks[0].completed if progress_bar.tasks else 0
-            is_last_step_pending = current_progress < TOTAL_STEPS
+            final_status_messages = []
 
             if client:
-                update_status("Cleaning up: Closing client...", style="blue", 
-                              step_index=12 if is_last_step_pending else None, 
-                              advance=is_last_step_pending)
-                await client.close()
-                current_status_lines.append(Text("   Client closed.", style="blue"))
-                _render_status_display()
-                live.refresh()
+                current_progress_val = progress_bar.tasks[0].completed if progress_bar.tasks else 0
+                
+                # If the "Closing Client" step (12) hasn't been reached or started
+                if current_progress_val < TOTAL_STEPS: # TOTAL_STEPS is 13 (0-12), step 12 is index 12.
+                                                       # If current_progress_val is 12, it means step 12 is current.
+                                                       # If < 12, it means we haven't reached step 12 description yet.
+                    update_status("Cleaning up: Closing client...", style="blue", 
+                                  step_index=12, # This will set progress to step 12
+                                  advance=True) 
+                    live.refresh() 
+                    await asyncio.sleep(0.2) # Brief pause for visibility of "Cleaning up"
+                
+                await client.close(model_to_unload=MODEL_NAME)
+                final_status_messages.append(Text("Client closed.", style="blue"))
             else:
-                 if is_last_step_pending and current_progress < 12 :
-                    progress_bar.update(overall_task, description=PROGRESS_STEPS[12], advance=1)
-                 current_status_lines.append(Text("   Client not initialized or cleanup skipped.", style="dim blue"))
-                 _render_status_display()
-                 live.refresh()
+                # Ensure progress bar shows step 12 if it wasn't reached and no client to close
+                current_progress_val = progress_bar.tasks[0].completed if progress_bar.tasks else 0
+                if current_progress_val < TOTAL_STEPS and current_progress_val < 12:
+                     progress_bar.update(overall_task, description=PROGRESS_STEPS[12], advance=1)
+
+                final_status_messages.append(Text("Client not initialized or cleanup skipped.", style="dim blue"))
             
-            final_completed_steps = progress_bar.tasks[0].completed if progress_bar.tasks else 0
-            if final_completed_steps < TOTAL_STEPS:
-                 progress_bar.update(overall_task, completed=TOTAL_STEPS, description="Finished.")
-            elif progress_bar.tasks:
-                 progress_bar.update(overall_task, description="Finished.")
+            # Update progress bar to "Finished." and 100%
+            if progress_bar.tasks:
+                progress_bar.update(overall_task, completed=TOTAL_STEPS, description="Finished.")
             
-            current_status_lines.append(Text("\n[bold blue]End of example.[/bold blue]"))
+            # Set the final status display content
+            current_status_lines.clear()
+            current_status_lines.extend(final_status_messages)
+            # Fix: Use Text.from_markup() instead of raw text with markup
+            current_status_lines.append(Text("\n", style=""))  # Add a blank line
+            current_status_lines.append(Text("End of example.", style="bold blue"))
             _render_status_display()
             live.refresh()
 
