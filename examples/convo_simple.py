@@ -1,42 +1,44 @@
 import asyncio
-import os
 import datetime
-import tiktoken
-import tonic_ollama_client as toc
-from rich.console import Console, Group
-from rich.panel import Panel
-from rich.live import Live
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
-from rich.text import Text
-from rich.box import ROUNDED
-from rich.layout import Layout # Added missing import
+import os
+from typing import AsyncGenerator, Dict, List, Optional, Tuple, Union
+
 import questionary
-from typing import Dict, List, Optional, Tuple, Union, AsyncGenerator, Any, Literal
+import tiktoken
+from rich.box import ROUNDED
+from rich.console import Console, Group
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
+from rich.progress import (BarColumn, Progress, TextColumn,
+                           TimeRemainingColumn)
+from rich.text import Text
 
-# === Configuration ===
-# Maximum tokens in conversation history before truncation
-# MAX_HISTORY_TOKENS = 32000  # 32K token limit - This is now managed by the client/Ollama internally for API calls
-DEFAULT_ENCODING = "cl100k_base"  # GPT-4 encoding, works well for most models
-REPROMPT_TOKEN_THRESHOLD = 200  # Remind persona after this many *generated* tokens (low for demo)
+import tonic_ollama_client as toc
 
-# Generic system prompt template to inject persona-specific information
+# Configuration
+DEFAULT_ENCODING = "cl100k_base"
+REPROMPT_TOKEN_THRESHOLD = 200  # Remind persona after this many generated tokens
+
+# System prompt template
 GENERIC_SYSTEM_PROMPT_TEMPLATE = """
-You are now embodying the historical figure {persona_name}. Think, reason, and respond exactly as they would, using their knowledge, personality, and communication style.
+You are {persona_name}. Embody this historical figure completely. Your thoughts, reasoning, and responses must perfectly reflect their knowledge, personality, and communication style.
 
+**Persona Profile:**
 {persona_description}
 
-As you engage in this conversation:
-1. Maintain the authentic voice, perspective, and mannerisms of {persona_name} at all times
-2. Draw upon your historical knowledge, expertise, and worldview as {persona_name}
-3. Respond thoughtfully to what the other person says
-4. If you don't understand something, politely ask for clarification as {persona_name} would
-5. Feel free to ask questions and express opinions consistent with {persona_name}'s known views
-6. Keep the conversation flowing naturally - you can introduce related topics of interest to {persona_name}
-7. Aim to keep responses concise (1-3 paragraphs) to facilitate back-and-forth dialogue
-8. Use vocabulary, references, and examples that would be natural to {persona_name}
-9. If the other speaker seems to be out of character or not adhering to their persona, you may gently and in-character point this out or ask a question that encourages them to return to their role.
+**Conversation Directives (Strict Adherence Required):**
+1.  **Unyielding Authenticity:** Consistently channel {persona_name}'s distinct voice, perspective, and mannerisms in every interaction.
+2.  **Historical Foundation:** Ground all statements and reasoning in {persona_name}'s actual historical knowledge, expertise, and worldview.
+3.  **Engaged Dialogue:** Respond thoughtfully and directly to the other speaker's points, fostering a meaningful exchange.
+4.  **Seek Clarity (In Character):** If any part of the conversation is unclear, politely request clarification as {persona_name} would.
+5.  **Proactive Contribution:** Actively ask questions and express opinions that are authentically aligned with {persona_name}'s known views and intellectual curiosities.
+6.  **Natural Conversational Flow:** Maintain a fluid and natural conversational rhythm. Introduce related topics that would genuinely interest {persona_name}.
+7.  **Optimal Response Length:** Aim for responses of 1-3 paragraphs to encourage a dynamic, back-and-forth dialogue.
+8.  **Authentic Lexicon:** Employ vocabulary, references, and illustrative examples that are characteristic of {persona_name} and their era.
+9.  **Guiding Peer's Persona:** Should the other speaker deviate from their assumed persona, gently and in-character, guide them back or pose a question to encourage their return to character.
 
-Remember that you are having a conversation with another historical figure in computer science, so engage with their ideas as {persona_name} would - whether that means respectful agreement, passionate disagreement, or curious inquiry.
+Remember, you are conversing with another historical figure. Your primary directive is to engage with their ideas with the full authenticity of {persona_name}—whether that involves respectful agreement, passionate debate, or insightful inquiry. Strive for a deeply authentic and intellectually stimulating dialogue.
 """
 
 PERSONAS = {
@@ -47,7 +49,7 @@ PERSONAS = {
     "Aristotle": "You are Aristotle, the ancient Greek philosopher who made foundational contributions to logic, metaphysics, ethics, and natural sciences. You approach knowledge systematically, categorizing, and analyzing concepts. You believe in empirical observation and logical reasoning as paths to understanding."
 }
 
-# More provocative and controversial conversation starters
+# Conversation starters
 CONVERSATION_STARTERS = [
     "Will AI Reveloutionize human society, or will it lead to dystopia? What are the most likely scenarios to occur and when?",
     "Are religious beliefs fundamentally incompatible with scientific thinking? Don't hold back on your true views.",
@@ -58,11 +60,10 @@ CONVERSATION_STARTERS = [
     "Custom starter (type your own)..."
 ]
 
-# Default model options if none are detected
+# Model options
 DEFAULT_AVAILABLE_MODELS = ["llama3.1:latest", "phi4:latest", "qwen3:8b", "mistral:latest"]
 CUSTOM_MODEL_OPTION = "Enter Custom Model Name..."
-# Define PROGRESS_STEPS if it's used in main_conversation_loop's finally block
-PROGRESS_STEPS = [f"Step {i}" for i in range(20)] # Placeholder, adjust as needed
+PROGRESS_STEPS = [f"Step {i}" for i in range(20)]
 
 
 def clear_console():
@@ -70,30 +71,27 @@ def clear_console():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 def get_timestamp():
-    """Get current timestamp in a file-friendly format."""
+    """Get current timestamp."""
     return datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 def count_tokens(text: str, encoding_name: str = DEFAULT_ENCODING) -> int:
-    """Count the number of tokens in a text string."""
+    """Count tokens in text."""
     try:
         encoding = tiktoken.get_encoding(encoding_name)
         return len(encoding.encode(text))
     except Exception:
-        # Fallback to approximate counting if tiktoken fails
         return len(text) // 4  # Rough approximation
 
 def count_message_tokens(message: Dict[str, str], encoding_name: str = DEFAULT_ENCODING) -> int:
-    """Count tokens in a message dict."""
+    """Count tokens in a message."""
     total = 0
-    # Count the role (usually adds 1-2 tokens)
     total += count_tokens(message.get("role", ""), encoding_name)
-    # Count the content
     if "content" in message and message["content"]:
         total += count_tokens(message["content"], encoding_name)
     return total
 
 def log_conversation_to_file(persona1: str, persona2: str, conversation_history: List[Tuple[str, str]], model_name: str):
-    """Log the conversation to a file in the current directory."""
+    """Save conversation to file."""
     timestamp = get_timestamp()
     filename = f"conversation_{persona1.replace(' ', '_')}_{persona2.replace(' ', '_')}_{timestamp}.log"
     
@@ -109,7 +107,7 @@ def log_conversation_to_file(persona1: str, persona2: str, conversation_history:
     return filename
 
 def get_full_system_prompt(persona_name: str) -> str:
-    """Generate the full system prompt for a persona, combining generic guidance with persona-specific details."""
+    """Generate system prompt for persona."""
     persona_description = PERSONAS[persona_name]
     return GENERIC_SYSTEM_PROMPT_TEMPLATE.format(
         persona_description=persona_description,
@@ -117,7 +115,7 @@ def get_full_system_prompt(persona_name: str) -> str:
     )
 
 async def select_model(console: Console) -> str:
-    """Select a model using questionary like in basic_usage.py."""
+    """Select LLM model."""
     console.print(Panel(
         "Select an LLM model to power the conversation",
         title="[bold blue]Model Selection[/bold blue]",
@@ -156,10 +154,9 @@ async def select_model(console: Console) -> str:
     return selected_model_or_custom
 
 async def select_persona(console: Console, exclude: Optional[str] = None) -> str:
-    """Select a persona using questionary."""
+    """Select a persona."""
     options = list(PERSONAS.keys())
     
-    # Remove excluded persona if provided
     if exclude and exclude in options:
         options.remove(exclude)
     
@@ -182,7 +179,7 @@ async def select_persona(console: Console, exclude: Optional[str] = None) -> str
     return result
 
 async def select_conversation_starter(console: Console) -> str:
-    """Select or enter a conversation starter."""
+    """Select or create a conversation starter."""
     console.print(Panel(
         "Select a conversation starter or create your own",
         title="[bold blue]Conversation Starter[/bold blue]",
@@ -203,7 +200,6 @@ async def select_conversation_starter(console: Console) -> str:
         custom_starter = await questionary.text(
             "Enter your custom conversation starter:"
         ).ask_async()
-        # Ensure a non-empty starter if custom is chosen but nothing entered
         return custom_starter if custom_starter and custom_starter.strip() else "What are your thoughts on the future of artificial intelligence?"
     
     return starter
@@ -217,7 +213,6 @@ async def select_max_turns(console: Console) -> int:
         border_style="blue"
     ))
     
-    # Validate turns is either -1 or >= 2
     def validate_turns(text):
         if not text.strip():
             return "Please enter a number"
@@ -225,7 +220,7 @@ async def select_max_turns(console: Console) -> int:
         try:
             value = int(text)
             if value == -1 or value >= 2:
-                return True # Valid input
+                return True
             return "Must be -1 (infinite) or at least 2 turns"
         except ValueError:
             return "Please enter a valid number"
@@ -246,15 +241,15 @@ async def main_conversation_loop(
     persona2_name: str, 
     starter_prompt: str, 
     max_turns: int,
-    progress_bar: Progress, # Pass progress_bar
-    overall_task # Pass overall_task
+    progress_bar: Progress,
+    overall_task
 ):
     layout = Layout(name="root")
     layout.split_column(
         Layout(name="header", size=3),
         Layout(name="conversation_area"),
-        Layout(name="progress_area", size=3), # For the main progress bar
-        Layout(name="footer", size=1),      # For final status messages
+        Layout(name="progress_area", size=3),
+        Layout(name="footer", size=1),
     )
 
     layout["header"].update(Panel(f"Conversation: {persona1_name} vs {persona2_name} | Model: {MODEL_NAME}", 
@@ -263,34 +258,28 @@ async def main_conversation_loop(
         Layout(name=persona1_name, ratio=1),
         Layout(name=persona2_name, ratio=1),
     )
-    layout["progress_area"].update(progress_bar) # Put progress bar in its layout area
+    layout["progress_area"].update(progress_bar)
     layout["footer"].update(Text("Starting conversation...", justify="center"))
-
-    # The parameters persona1_name and persona2_name are already what we need.
-    # No need to reassign them from non-existent persona1 and persona2 variables here.
-    # persona1_name = persona1 # REMOVE THIS LINE
-    # persona2_name = persona2 # REMOVE THIS LINE
     
-    # Generate unique conversation IDs for each persona
-    # Use the function parameters persona1_name and persona2_name directly
+    # Generate conversation IDs
     persona1_conv_id = f"persona_{persona1_name.replace(' ', '_').lower()}_{get_timestamp()}"
     persona2_conv_id = f"persona_{persona2_name.replace(' ', '_').lower()}_{get_timestamp()}"
     
-    conversation_log: List[Tuple[str, str]] = [] # For logging to file
+    conversation_log: List[Tuple[str, str]] = []
 
-    # Initial prompt for the first speaker
+    # Initial prompt
     current_prompt = starter_prompt
-    current_speaker = persona1_name # Persona 1 starts by responding to the starter
+    current_speaker = persona1_name
     other_speaker = persona2_name
     current_turn = 0
 
     persona1_generated_tokens = 0
     persona2_generated_tokens = 0
     
-    # Setup Rich Live display
+    # Setup display
     ai_message_text_content: List[Union[str, Text]] = [] 
     
-    # Initialize layout and panels for personas
+    # Initialize panels
     layout[persona1_name].update(Panel(Text("Waiting..."), title=f"[bold blue]{persona1_name}[/bold blue]", border_style="blue", box=ROUNDED))
     layout[persona2_name].update(Panel(Text("Waiting..."), title=f"[bold magenta]{persona2_name}[/bold magenta]", border_style="magenta", box=ROUNDED))
 
@@ -303,7 +292,7 @@ async def main_conversation_loop(
                 current_speaker_conv_id = persona1_conv_id if current_speaker == persona1_name else persona2_conv_id
                 
                 current_turn += 1
-                ai_message_text_content: List[Union[str, Text]] = [] # Can hold Text objects for styling
+                ai_message_text_content: List[Union[str, Text]] = []
                 
                 turn_info = f"Turn {current_turn}"
                 if max_turns != -1:
@@ -327,24 +316,24 @@ async def main_conversation_loop(
                     if persona1_generated_tokens > REPROMPT_TOKEN_THRESHOLD:
                         reminder = f"(System note to {persona1_name}: Remember your persona. You are {persona1_name}. The current topic, initiated by {other_speaker}, is: '{current_prompt[:100]}...')\n\n"
                         prompt_for_llm = reminder + current_prompt
-                        persona1_generated_tokens = 0 # Reset counter
+                        persona1_generated_tokens = 0
                         if client.debug: toc.fancy_print(console, f"Reminding {persona1_name} of their persona.", style="dim cyan")
                 elif current_speaker == persona2_name:
                     if persona2_generated_tokens > REPROMPT_TOKEN_THRESHOLD:
                         reminder = f"(System note to {persona2_name}: Remember your persona. You are {persona2_name}. The current topic, initiated by {other_speaker}, is: '{current_prompt[:100]}...')\n\n"
                         prompt_for_llm = reminder + current_prompt
-                        persona2_generated_tokens = 0 # Reset counter
+                        persona2_generated_tokens = 0
                         if client.debug: toc.fancy_print(console, f"Reminding {persona2_name} of their persona.", style="dim cyan")
                 
                 full_ai_message_content = ""
 
-                # Always use streaming
+                # Get streaming response
                 response_stream = await client.chat(
                     model=MODEL_NAME,
-                    message=prompt_for_llm, # Use potentially modified prompt
+                    message=prompt_for_llm,
                     temperature=0.8,
-                    conversation_id=current_speaker_conv_id, # Use persona-specific conversation ID
-                    system_prompt=get_full_system_prompt(current_speaker), # Ensure system prompt is for current speaker
+                    conversation_id=current_speaker_conv_id,
+                    system_prompt=get_full_system_prompt(current_speaker),
                     stream=True
                 )
                 
@@ -352,10 +341,10 @@ async def main_conversation_loop(
                     async for partial_response in response_stream:
                         if hasattr(partial_response, 'message') and hasattr(partial_response.message, 'content') and partial_response.message.content:
                             chunk = partial_response.message.content
-                            ai_message_text_content.append(chunk) # Append raw string chunk
+                            ai_message_text_content.append(chunk)
                             full_ai_message_content += chunk
                             
-                            # Update thinking text with accumulating content for live effect
+                            # Update display
                             current_speaker_panel_content = Group(thinking_text, Text.assemble(*ai_message_text_content))
                             layout[current_speaker].update(Panel(
                                 current_speaker_panel_content,
@@ -367,13 +356,13 @@ async def main_conversation_loop(
                         if hasattr(partial_response, 'done') and partial_response.done:
                             break
                 else:
-                    # This block should ideally not be hit if stream=True works as expected
+                    # Fallback for non-streaming (shouldn't happen)
                     if isinstance(response_stream, dict) and "message" in response_stream:
                         full_ai_message_content = response_stream["message"]["content"]
                         ai_message_text_content.append(full_ai_message_content)
                     else:
                         ai_message_text_content.append("Error: Unexpected response format.")
-                    # Update panel with non-streamed message
+                    
                     current_speaker_panel_content = Group(Text(f"{turn_info} - {speaker_display_name}", style="bold green"), Text.assemble(*ai_message_text_content))
                     layout[current_speaker].update(Panel(
                         current_speaker_panel_content,
@@ -386,12 +375,14 @@ async def main_conversation_loop(
 
                 conversation_log.append((current_speaker, full_ai_message_content))
                 
+                # Track tokens
                 generated_tokens_this_turn = count_tokens(full_ai_message_content)
                 if current_speaker == persona1_name:
                     persona1_generated_tokens += generated_tokens_this_turn
                 else:
                     persona2_generated_tokens += generated_tokens_this_turn
 
+                # Update display with final content
                 final_speaker_panel_content = Group(
                     Text(f"{turn_info} - {speaker_display_name}", style="bold green"),
                     Text.assemble(*ai_message_text_content)
@@ -404,7 +395,7 @@ async def main_conversation_loop(
                 ))
                 live_display.refresh()
                 
-                current_prompt = full_ai_message_content # Next speaker responds to this
+                current_prompt = full_ai_message_content
                 
                 await asyncio.sleep(0.1)
                 
@@ -414,12 +405,12 @@ async def main_conversation_loop(
             layout["footer"].update(Text(f"An error occurred: {e}", style="bold red", justify="center"))
             if client.debug: toc.fancy_print(console, f"Error in conversation loop: {e}", style="red")
         finally:
-            # Update progress bar to 100% and "Finished"
-            if progress_bar and overall_task is not None : # Check if overall_task is not None
+            # Update progress bar
+            if progress_bar and overall_task is not None:
                  progress_bar.update(overall_task, completed=max_turns if max_turns != -1 else current_turn, description="Conversation Ended", total=max_turns if max_turns != -1 else current_turn)
             
             layout["footer"].update(Text("Conversation ended. Log file saved.", style="bold green", justify="center"))
-            live_display.refresh() # Ensure final status is shown
+            live_display.refresh()
             
             log_filename = log_conversation_to_file(persona1_name, persona2_name, conversation_log, MODEL_NAME)
             console.print(f"\n[bold green]Conversation logged to: {log_filename}[/bold green]")
@@ -436,12 +427,12 @@ async def main():
         border_style="green"
     ))
     
-    # Select model first (like in basic_usage.py)
+    # Select model
     MODEL_NAME = await select_model(console)
     if not MODEL_NAME:
         return
     
-    # Check if Ollama server is running
+    # Check server
     client = toc.create_client(debug=False)
     try:
         await client.ensure_server_ready()
@@ -449,7 +440,7 @@ async def main():
         console.print("[bold red]Error: Ollama server is not running. Please start it with 'ollama serve'[/bold red]")
         return
     
-    # Check if model is available
+    # Check model
     try:
         await client.get_async_client().show(model=MODEL_NAME)
     except toc.ResponseError as e:
@@ -461,32 +452,28 @@ async def main():
             console.print(f"[bold red]Error: {e}[/bold red]")
             return
     
-    # Select first persona
+    # Select personas and conversation parameters
     persona1 = await select_persona(console)
     if not persona1:
         return
     
     clear_console()
     
-    # Select second persona
     persona2 = await select_persona(console, exclude=persona1)
     if not persona2:
         return
     
     clear_console()
     
-    # Select conversation starter
     starter = await select_conversation_starter(console)
     if not starter:
         return
     
-    # Select max turns
     max_turns = await select_max_turns(console)
     
     clear_console()
 
-    # Setup progress bar for conversation turns
-    # Initialize progress bar here to pass to main_conversation_loop
+    # Setup progress bar
     progress_bar = Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -494,26 +481,24 @@ async def main():
         TimeRemainingColumn(),
         expand=True,
     )
-    # Add a task for the conversation turns. Max_turns can be -1 for infinite.
-    # If max_turns is -1, we can't set a total, or set a very large one / update dynamically.
-    # For simplicity, if -1, we'll just show "Ongoing".
+    
     overall_task = progress_bar.add_task(
         "Conversation Progress", 
-        total=max_turns if max_turns != -1 else 100, # Placeholder total for "infinite"
-        start=(max_turns != -1) # Start progress only if not infinite
+        total=max_turns if max_turns != -1 else 100,
+        start=(max_turns != -1)
     )
     if max_turns == -1:
         progress_bar.update(overall_task, description="Conversation (Ongoing - Ctrl+C to stop)")
 
 
-    # Start conversation loop
+    # Start conversation
     await main_conversation_loop(
         console, client, MODEL_NAME, 
         persona1, persona2, starter, max_turns,
-        progress_bar, overall_task # Pass progress bar and task
+        progress_bar, overall_task
     )
 
-    # Close client
+    # Cleanup
     await client.close(model_to_unload=MODEL_NAME)
     console.print(f"[bold blue]Client closed. Model {MODEL_NAME} unload attempted.[/bold blue]")
 
