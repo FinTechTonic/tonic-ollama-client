@@ -11,7 +11,7 @@ A Python wrapper for the Ollama API, providing conversation management, model re
 | ✅ **Model Readiness Checks** | Verify model availability, auto-pull if needed |
 | 🎨 **Rich Console Output** | Formatted console output |
 | 📊 **Embedding Generation** | Generate text embeddings |
-| 🚀 **Support for Key Models** | Optimized for `llama3.1:latest`, `phi4:latest`, `qwen2:7b` |
+| 🚀 **Support for Key Models** | Optimized for `llama3.1:latest`, `phi4:latest`, `qwen3:8b` |
 
 ## Installation
 

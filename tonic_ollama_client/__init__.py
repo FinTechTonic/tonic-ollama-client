@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, AsyncGenerator, TypeVar, overload, Literal, cast
 import socket
 
 # Third-party imports
@@ -28,7 +28,7 @@ from tenacity import (
 
 # Constants
 CONCURRENT_MODELS = 1  # Only one model can be loaded by default
-DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE = ["llama3.1:latest", "phi4:latest", "qwen2:7b", "mistral:latest"] # Models to attempt to unload
+DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE = ["llama3.1:latest", "phi4:latest", "qwen3:8b", "mistral:latest"] # Models to attempt to unload
 OLLAMA_SERVER_NOT_RUNNING_MESSAGE = """
 [bold red]Ollama server is not running or not responsive at {base_url}.[/bold red]
 
@@ -63,6 +63,7 @@ class ClientConfig(BaseModel):
     max_server_startup_attempts: int = Field(default=3, description="Max server responsiveness check attempts")
     debug: bool = Field(default=False, description="Enable debug output")
     concurrent_models: int = Field(default=CONCURRENT_MODELS, description="Maximum number of concurrent models (always 1)")
+    stream_responses: bool = Field(default=False, description="Stream responses from chat by default")
 
 
 class OllamaServerNotRunningError(ConnectionError):
@@ -84,6 +85,7 @@ class TonicOllamaClient:
         console: Optional[Console] = None,
         concurrent_models: int = CONCURRENT_MODELS,
         models_to_unload_on_close: Optional[List[str]] = None,
+        stream_responses: bool = False, # New parameter
     ):
         if console is None:
             console = Console()
@@ -101,11 +103,13 @@ class TonicOllamaClient:
             max_server_startup_attempts=max_server_startup_attempts,
             debug=debug,
             concurrent_models=CONCURRENT_MODELS,  # Always use the constant
+            stream_responses=stream_responses, # Store new parameter
         )
         self.base_url = self.config.base_url
         self.max_server_startup_attempts = self.config.max_server_startup_attempts
         self.debug = self.config.debug
         self.concurrent_models = self.config.concurrent_models # This should be CONCURRENT_MODELS
+        self.stream_responses = self.config.stream_responses # New attribute
         self.console = console
         self.async_client: Optional[AsyncClient] = None
         self.conversations: Dict[str, List[Dict[str, Any]]] = {}
@@ -116,7 +120,7 @@ class TonicOllamaClient:
 
         if self.debug:
             fancy_print(self.console, 
-                f"Initialized TonicOllamaClient (base_url={base_url}, concurrent_models={self.concurrent_models}, default_unload_list_size={len(self.models_to_unload_on_close)})", 
+                f"Initialized TonicOllamaClient (base_url={base_url}, concurrent_models={self.concurrent_models}, stream_default={self.stream_responses}, default_unload_list_size={len(self.models_to_unload_on_close)})", 
                 style="dim blue")
 
     def get_async_client(self) -> AsyncClient:
@@ -206,6 +210,30 @@ class TonicOllamaClient:
 
         del self.conversations[conversation_id]
 
+    @overload
+    async def chat(
+        self,
+        model: str,
+        message: str,
+        conversation_id: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        stream: Literal[False] = False,
+    ) -> Dict[str, Any]:
+        ...
+    
+    @overload
+    async def chat(
+        self,
+        model: str,
+        message: str,
+        conversation_id: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        stream: Literal[True] = True,
+    ) -> AsyncGenerator[ChatResponse, None]:
+        ...
+
     @retry(**API_RETRY_CONFIG)
     async def chat(
         self,
@@ -214,9 +242,13 @@ class TonicOllamaClient:
         conversation_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
-    ) -> Union[Dict[str, Any], ChatResponse]:
-        """Send chat message, get response, manage conversation history."""
+        stream: Optional[bool] = None,
+    ) -> Union[Dict[str, Any], AsyncGenerator[ChatResponse, None]]:
+        """Send chat message, get response, manage conversation history. Can stream responses."""
         await self.ensure_server_ready()
+
+        if stream is None:
+            stream = self.stream_responses # Use instance default if not specified
             
         # First prepare the conversation outside the semaphore
         if conversation_id is None:
@@ -231,38 +263,80 @@ class TonicOllamaClient:
 
         user_message = {"role": "user", "content": message}
         messages.append(user_message)
-        self.conversations[conversation_id].append(user_message)
+        # For non-streaming, add user message to history now. For streaming, it's already added.
+        # The self.conversations[conversation_id] is updated with user message *before* the call.
+        # Assistant message is added *after* for non-streaming, or *after full accumulation* for streaming.
+        if not stream: # Only add user message to persistent history if not streaming here, as it's done before the loop for streaming
+             if not any(msg['role'] == 'user' and msg['content'] == message for msg in self.conversations[conversation_id]):
+                self.conversations[conversation_id].append(user_message)
+        else: # For streaming, ensure user message is in history before starting
+            self.conversations[conversation_id].append(user_message)
+
 
         # Use semaphore to limit concurrent model access
         async with self._model_semaphore:
             if self.debug:
                 fancy_print(self.console, 
-                    f"Acquired model semaphore for chat with '{model}' ({self.get_available_model_slots()}/{self.concurrent_models} slots available)", 
+                    f"Acquired model semaphore for chat with '{model}' ({self.get_available_model_slots()}/{self.concurrent_models} slots available, stream={stream})", 
                     style="dim blue")
             
             try:
                 client = self.get_async_client()
 
                 if self.debug:
-                    fancy_print(self.console, f"Sending chat request to model '{model}'", style="dim blue")
+                    fancy_print(self.console, f"Sending chat request to model '{model}' (stream={stream})", style="dim blue")
 
-                response = await client.chat(
-                    model=model,
-                    messages=messages,
-                    options={"temperature": temperature},
-                    stream=False,
-                )
+                if stream:
+                    # Handle streaming response
+                    response_stream = await client.chat(
+                        model=model,
+                        messages=messages, # Send the prepared messages list
+                        options={"temperature": temperature},
+                        stream=True,
+                    )
+                    
+                    # Define the async generator within the semaphore context
+                    async def stream_generator() -> AsyncGenerator[ChatResponse, None]:
+                        full_assistant_content = ""
+                        try:
+                            async for part in response_stream: # part is already ChatResponse
+                                yield part # Removed redundant cast
+                                if hasattr(part, 'message') and hasattr(part.message, 'content') and part.message.content:
+                                    full_assistant_content += part.message.content
+                                if hasattr(part, 'done') and part.done:
+                                    assistant_message_for_history = {
+                                        "role": "assistant",
+                                        "content": full_assistant_content
+                                    }
+                                    self.conversations[conversation_id].append(assistant_message_for_history)
+                                    if self.debug:
+                                        fancy_print(self.console, f"Stream for '{model}' completed. Full response added to history.", style="dim blue")
+                        finally:
+                            if self.debug:
+                                fancy_print(self.console, 
+                                    f"Released model semaphore for chat stream with '{model}'", 
+                                    style="dim blue")
+                    return stream_generator()
 
-                assistant_message = {
-                    "role": "assistant",
-                    "content": response["message"]["content"]
-                }
-                self.conversations[conversation_id].append(assistant_message)
+                else:
+                    # Handle non-streaming response
+                    response: ChatResponse = await client.chat( # response is of type ChatResponse
+                        model=model,
+                        messages=messages, # Send the prepared messages list
+                        options={"temperature": temperature},
+                        stream=False,
+                    )
 
-                if self.debug:
-                    fancy_print(self.console, f"Received response from model '{model}'", style="dim blue")
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": response["message"]["content"]
+                    }
+                    self.conversations[conversation_id].append(assistant_message)
 
-                return response
+                    if self.debug:
+                        fancy_print(self.console, f"Received response from model '{model}'", style="dim blue")
+                    
+                    return response.model_dump() # Convert ChatResponse to Dict
 
             except ResponseError as e:
                 fancy_print(self.console, f"Ollama API error: {str(e)}", style="red")
@@ -271,10 +345,11 @@ class TonicOllamaClient:
                 fancy_print(self.console, f"Error in chat: {str(e)}", style="red")
                 raise
             finally:
-                if self.debug:
-                    fancy_print(self.console, 
-                        f"Released model semaphore for chat with '{model}'", 
-                        style="dim blue")
+                if not stream: # Only release here if not streaming, stream_generator handles its own release
+                    if self.debug:
+                        fancy_print(self.console, 
+                            f"Released model semaphore for chat with '{model}'", 
+                            style="dim blue")
 
     @retry(**API_RETRY_CONFIG)
     async def generate_embedding(self, model: str, text: str) -> List[float]:
@@ -376,6 +451,7 @@ def create_client(
     console: Optional[Console] = None,
     concurrent_models: int = CONCURRENT_MODELS,
     models_to_unload_on_close: Optional[List[str]] = None,
+    stream_responses: bool = False, # New parameter
 ) -> TonicOllamaClient:
     """Create a pre-configured TonicOllama client."""
     if console is None:
@@ -390,6 +466,7 @@ def create_client(
         console=console_instance,
         concurrent_models=CONCURRENT_MODELS,
         models_to_unload_on_close=models_to_unload_on_close, # Pass through
+        stream_responses=stream_responses, # Pass through
     )
 
 def get_ollama_models_sync() -> List[str]:
@@ -416,5 +493,6 @@ __all__ = [
     "create_client",
     "get_ollama_models_sync",
     "fancy_print",
+    # "stream_responses", # Removed from __all__
 ]
 

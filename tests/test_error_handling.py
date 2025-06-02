@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 from tonic_ollama_client import TonicOllamaClient, ResponseError, OllamaServerNotRunningError # Replaced ModelNotReadyError
 import asyncio
 
-APPROVED_MODELS = ["llama3.1:latest", "phi4:latest", "qwen2:7b", "mistral:latest"]
+APPROVED_MODELS = ["llama3.1:latest", "phi4:latest", "qwen3:8b", "mistral:latest"]
 DEFAULT_TEST_MODEL = "llama3.1:latest"
 
 class TestErrorHandling:

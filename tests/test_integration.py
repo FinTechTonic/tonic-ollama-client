@@ -2,11 +2,12 @@ import pytest
 import pytest_asyncio
 import asyncio
 import tonic_ollama_client as toc
+from typing import Dict, Any, cast
 
 SUPPORTED_MODELS_LIST = [
     "llama3.1:latest",
     "phi4:latest",
-    "qwen2:7b",
+    "qwen3:8b",
     "mistral:latest",
 ]
 
@@ -48,12 +49,16 @@ class BaseModelTests:
     async def test_live_chat_specific(self, live_client_session: toc.TonicOllamaClient, MODEL_NAME: str):
         """Tests live chat functionality."""
         await self._ensure_server_and_model_available(live_client_session, MODEL_NAME)
-        response = await live_client_session.chat(
+        
+        # Explicitly specify we want a non-streaming response with type annotation
+        response: Dict[str, Any] = await live_client_session.chat(
             model=MODEL_NAME,
             message="What is the capital of France? Respond with only the city name.",
-            temperature=0.1
+            temperature=0.1,
+            stream=False  # Explicitly non-streaming
         )
         
+        # Now we can safely use dictionary access
         assert "message" in response
         assert "content" in response["message"]
         assert isinstance(response["message"]["content"], str)

@@ -3,6 +3,7 @@ import pytest_asyncio
 import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 from tonic_ollama_client import TonicOllamaClient, CONCURRENT_MODELS
+from ollama._types import ChatResponse, Message # Import necessary types
 
 @pytest.mark.asyncio
 async def test_sequential_model_access():
@@ -19,7 +20,13 @@ async def test_sequential_model_access():
         # Configure the mock chat method to have a delay
         async def delayed_chat(*args, **kwargs):
             await asyncio.sleep(0.5)  # Simulate model loading/processing time
-            return {"message": {"content": "Response"}}
+            # Return a ChatResponse object instead of a raw dict
+            return ChatResponse(
+                model="model1", 
+                created_at="dummy_ts", 
+                message=Message(role="assistant", content="Response"), 
+                done=True
+            )
         
         mock_instance.chat = AsyncMock(side_effect=delayed_chat)
         
@@ -28,8 +35,13 @@ async def test_sequential_model_access():
             # Start multiple sequential chat requests
             start_time = asyncio.get_event_loop().time()
             
-            task1 = asyncio.create_task(client.chat(model="model1", message="message1"))
-            task2 = asyncio.create_task(client.chat(model="model1", message="message2"))
+            async def wrapped_chat_call(model_name: str, msg_content: str):
+                # This is the call Pylance was flagging.
+                # The TonicOllamaClient.chat method does have a 'message' parameter.
+                return await client.chat(model=model_name, message=msg_content)
+
+            task1 = asyncio.create_task(wrapped_chat_call(model_name="model1", msg_content="message1"))
+            task2 = asyncio.create_task(wrapped_chat_call(model_name="model1", msg_content="message2"))
             
             # Wait for both tasks to complete
             await asyncio.gather(task1, task2)
@@ -58,7 +70,13 @@ async def test_chat_and_embedding_sequential():
         # Configure the mock methods to have a delay
         async def delayed_chat(*args, **kwargs):
             await asyncio.sleep(0.5)
-            return {"message": {"content": "Response"}}
+            # Return a ChatResponse object
+            return ChatResponse(
+                model="model1",
+                created_at="dummy_ts",
+                message=Message(role="assistant", content="Response"),
+                done=True
+            )
         
         async def delayed_embeddings(*args, **kwargs):
             await asyncio.sleep(0.5)
@@ -71,10 +89,17 @@ async def test_chat_and_embedding_sequential():
         with patch.object(client, '_is_ollama_server_running_sync', return_value=True):
             # Start sequential chat and embedding requests
             start_time = asyncio.get_event_loop().time()
-            
-            task1 = asyncio.create_task(client.chat(model="model1", message="message1"))
-            task2 = asyncio.create_task(client.generate_embedding(model="model1", text="text2"))
-            
+
+            async def wrapped_chat_call(model_name: str, msg_content: str):
+                # This is the call Pylance was flagging.
+                return await client.chat(model=model_name, message=msg_content)
+
+            async def wrapped_embedding_call(model_name: str, text_content: str):
+                return await client.generate_embedding(model=model_name, text=text_content)
+
+            task1 = asyncio.create_task(wrapped_chat_call(model_name="model1", msg_content="message1"))
+            task2 = asyncio.create_task(wrapped_embedding_call(model_name="model1", text_content="text2"))
+
             # Wait for both tasks to complete
             await asyncio.gather(task1, task2)
             

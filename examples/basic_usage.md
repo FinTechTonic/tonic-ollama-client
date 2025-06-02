@@ -211,7 +211,7 @@ The script uses `rich.live.Live` to provide a dynamic, non-scrolling interface:
 The script works with any Ollama-compatible model, with built-in support for:
 - `llama3.1:latest`
 - `phi4:latest` 
-- `qwen2:7b`
+- `qwen3:8b`
 - `mistral:latest`
 
 Custom models can be entered manually during the selection process.

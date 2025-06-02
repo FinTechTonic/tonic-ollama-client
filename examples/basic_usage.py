@@ -6,10 +6,10 @@ from rich.live import Live
 from rich.progress import Progress as RichProgress, BarColumn, TextColumn, TimeRemainingColumn
 from rich.text import Text
 import questionary
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 # Configuration
-DEFAULT_AVAILABLE_MODELS: List[str] = ["llama3.1:latest", "phi4:latest", "qwen2:7b", "mistral:latest"]
+DEFAULT_AVAILABLE_MODELS: List[str] = ["llama3.1:latest", "phi4:latest", "qwen3:8b", "mistral:latest"]
 CUSTOM_MODEL_OPTION = "Enter Custom Model Name..."
 
 PROGRESS_STEPS = [
@@ -157,10 +157,12 @@ async def main():
             
             update_status(f"Performing basic chat with '{MODEL_NAME}'...", step_index=4)
             user_msg_basic = "What is the capital of France? Respond concisely."
-            chat_response = await client.chat(
+            # Explicitly annotate as Dict for type checker
+            chat_response: Dict[str, Any] = await client.chat(
                 model=MODEL_NAME,
                 message=user_msg_basic,
-                system_prompt="You are a helpful AI assistant."
+                system_prompt="You are a helpful AI assistant.",
+                stream=False  # Explicitly non-streaming
             )
             log_output("User", user_msg_basic)
             log_output("AI", chat_response['message']['content'])
@@ -171,11 +173,13 @@ async def main():
 
             update_status(f"Sending message to '{conv_id}'...", step_index=6)
             user_msg_conv1 = "Hello! My favorite color is blue."
+            # This call's response is not directly used, but for consistency if it were:
             await client.chat(
                 model=MODEL_NAME,
                 message=user_msg_conv1,
                 conversation_id=conv_id,
-                system_prompt="Remember details about the user. Be friendly and conversational."
+                system_prompt="Remember details about the user. Be friendly and conversational.",
+                stream=False # Explicitly non-streaming
             )
             log_output("User", user_msg_conv1)
             # AI response for this turn is implicitly stored in conversation history by the client.
@@ -183,10 +187,12 @@ async def main():
 
             update_status(f"Querying context in '{conv_id}'...", step_index=7)
             user_msg_conv2 = "What is my favorite color?"
-            response_conv = await client.chat(
+            # Explicitly annotate as Dict for type checker
+            response_conv: Dict[str, Any] = await client.chat(
                 model=MODEL_NAME,
                 message=user_msg_conv2,
-                conversation_id=conv_id
+                conversation_id=conv_id,
+                stream=False # Explicitly non-streaming
             )
             log_output("User", user_msg_conv2)
             log_output("AI", response_conv['message']['content'])
@@ -194,20 +200,24 @@ async def main():
             # Add more conversational turns
             user_msg_conv3 = "Thanks! Based on my favorite color, can you suggest a type of flower I might like?"
             update_status(f"Asking follow-up in '{conv_id}'...", advance=False) # Keep current step, just update message
-            response_conv3 = await client.chat(
+            # Explicitly annotate as Dict for type checker
+            response_conv3: Dict[str, Any] = await client.chat(
                 model=MODEL_NAME,
                 message=user_msg_conv3,
-                conversation_id=conv_id
+                conversation_id=conv_id,
+                stream=False # Explicitly non-streaming
             )
             log_output("User", user_msg_conv3)
             log_output("AI", response_conv3['message']['content'])
 
             user_msg_conv4 = "That's a good suggestion. What about a type of car that might suit someone who likes blue?"
             update_status(f"Asking another follow-up in '{conv_id}'...", advance=False)
-            response_conv4 = await client.chat(
+            # Explicitly annotate as Dict for type checker
+            response_conv4: Dict[str, Any] = await client.chat(
                 model=MODEL_NAME,
                 message=user_msg_conv4,
-                conversation_id=conv_id
+                conversation_id=conv_id,
+                stream=False # Explicitly non-streaming
             )
             log_output("User", user_msg_conv4)
             log_output("AI", response_conv4['message']['content'])

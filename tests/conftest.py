@@ -4,7 +4,7 @@ import time
 
 # Define the models to be cleaned up.
 # This list should ideally be centralized if used in multiple places.
-APPROVED_MODELS_TO_CLEANUP = ["llama3.1:latest", "phi4:latest", "qwen2:7b"]
+APPROVED_MODELS_TO_CLEANUP = ["llama3.1:latest", "phi4:latest", "qwen3:8b"]
 OLLAMA_BASE_URL = "http://localhost:11434" # Or from a config
 
 @pytest.fixture(scope="session", autouse=True)
