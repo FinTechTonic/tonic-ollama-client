@@ -19,6 +19,7 @@ import tonic_ollama_client as toc
 # Configuration
 DEFAULT_ENCODING = "cl100k_base"
 REPROMPT_TOKEN_THRESHOLD = 200
+LOG_BATCH_INTERVAL = 5.0  # Time in seconds between logging partial responses
 
 # System prompt template
 GENERIC_SYSTEM_PROMPT_TEMPLATE = """
@@ -109,7 +110,7 @@ def create_log_file_header(persona1: str, persona2: str, model_name: str) -> str
     
     return filename
 
-def append_to_log_file(filename: str, speaker: str, message: str, partial: bool = False):
+def append_to_log_file(filename: str, speaker: str, message: str, thinking: str = "", partial: bool = False):
     """
     Append a single message to the log file.
     
@@ -117,6 +118,7 @@ def append_to_log_file(filename: str, speaker: str, message: str, partial: bool 
         filename: Path to the log file
         speaker: Name of the speaker
         message: Content of the message
+        thinking: Thinking content if available
         partial: If True, marks this as a partial response (streaming)
     """
     # For partial responses, only log to debug file if enabled
@@ -130,9 +132,12 @@ def append_to_log_file(filename: str, speaker: str, message: str, partial: bool 
                 os.fsync(f.fileno())
         return
     
-    # For complete responses, log in ChatML-like format
+    # For complete responses, log in ChatML-like format with thinking content
     with open(filename, 'a', encoding='utf-8') as f:
-        f.write(f"<{speaker}>\n{message}\n</>\n\n")
+        if thinking:
+            f.write(f"<{speaker}>\n<think>\n{thinking}\n</think>\n{message}\n</>\n\n")
+        else:
+            f.write(f"<{speaker}>\n{message}\n</>\n\n")
         f.flush()
         os.fsync(f.fileno())
 
@@ -348,10 +353,13 @@ async def main_conversation_loop(
 
     layout["header"].update(Panel(f"Conversation: {persona1_name} vs {persona2_name} | Model: {MODEL_NAME}", 
                                   title="[bold green]Live Chat[/bold green]", border_style="green"))
+    
+    # Fix persona positions - persona1 on left, persona2 on right
     layout["conversation_area"].split_row(
         Layout(name=persona1_name, ratio=1),
         Layout(name=persona2_name, ratio=1),
     )
+    
     layout["progress_area"].update(progress_bar)
     layout["footer"].update(Text("Starting conversation...", justify="center"))
     
@@ -364,22 +372,32 @@ async def main_conversation_loop(
     # Create log file with header
     log_filename = create_log_file_header(persona1_name, persona2_name, MODEL_NAME)
     
-    # Track accumulated content for streaming log batches
-    accumulated_response = ""
-    last_log_time = datetime.datetime.now()
-    LOG_BATCH_INTERVAL = 5.0  # Increased interval to reduce partial logging frequency
+    # Reset the log file - ensure we start fresh
+    with open(log_filename, 'w', encoding='utf-8') as f:
+        f.write(f"# Conversation between {persona1_name} and {persona2_name}\n")
+        f.write(f"# Model: {MODEL_NAME}\n")
+        f.write(f"# Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("#" + "="*79 + "\n\n")
     
-    # Initialize a flag to track if we're already accumulated this turn's response
+    # Initialize a flag to track if the current turn's response has been logged
     current_turn_logged = False
     
     # Initial prompt
     current_prompt = starter_prompt
-    current_speaker = persona1_name
-    other_speaker = persona2_name
+    
+    # Initialize speakers - persona1 is ALWAYS first speaker (left panel)
+    current_speaker = persona2_name  # Set to persona2 initially
+    other_speaker = persona1_name    # Set to persona1 initially
+    
     current_turn = 0
 
     persona1_generated_tokens = 0
     persona2_generated_tokens = 0
+    
+    # Track accumulated content for streaming log batches - moved earlier to ensure initialization
+    accumulated_response = ""
+    # Initialize last_log_time at function start to avoid the error
+    last_log_time = datetime.datetime.now()
     
     # Setup Rich Live display
     # ai_message_text_content will store Text objects for the current turn's display
@@ -388,15 +406,15 @@ async def main_conversation_loop(
     # Adjust truncation based on console width
     def calculate_max_display_length():
         """Dynamically calculate max display length based on console dimensions"""
-        # Base value that works well for standard windows
-        base_length = 800
+        # Increase base value for larger displays
+        base_length = 1200
         
         # Adjust based on console width - wider consoles can display more text
         # Get the actual console width, with a reasonable default if detection fails
         try:
             width = console.width or 80
-            # Scale the length based on width, with some reasonable bounds
-            return min(max(base_length, width * 12), 3000)
+            # Increase the multiplier to allow more text to be displayed
+            return min(max(base_length, width * 16), 4000)
         except Exception:
             return base_length
     
@@ -418,9 +436,13 @@ async def main_conversation_loop(
     with Live(layout, console=console, refresh_per_second=2, vertical_overflow="visible", auto_refresh=False) as live_display:
         try:
             while max_turns == -1 or current_turn < max_turns:
-                # Swap speakers
+                # Swap speakers - this ensures persona1 (left panel) goes first
+                # since we initialized current_speaker to persona2 above
                 current_speaker, other_speaker = other_speaker, current_speaker
                 current_speaker_conv_id = persona1_conv_id if current_speaker == persona1_name else persona2_conv_id
+                
+                # Reset logging flag for this turn
+                current_turn_logged = False
                 
                 current_turn += 1
                 live_display_content_elements.clear() # Clear for the new turn
@@ -457,11 +479,13 @@ async def main_conversation_loop(
                         persona2_generated_tokens = 0
                         if client.debug: toc.fancy_print(console, f"Reminding {persona2_name} of their persona.", style="dim cyan")
                 
+                # Reset accumulators for this turn
                 full_ai_message_content = ""
-                full_ai_thinking_content = "" # Accumulator for thinking content
-                accumulated_response = ""  # Reset for this turn
-                last_log_time = datetime.datetime.now()  # Reset timer
-
+                full_ai_thinking_content = ""
+                accumulated_response = ""
+                # Reset the log timer for this turn
+                last_log_time = datetime.datetime.now()
+                
                 # Determine if we expect 'thinking' field from qwen3 models
                 expect_separate_thinking_field = "qwen3" in MODEL_NAME.lower()
 
@@ -488,6 +512,9 @@ async def main_conversation_loop(
                     # Potentially break or raise an exception here depending on desired error handling
                     break # Exit the conversation loop
 
+                # Fix to prevent early termination: Ensure we always have a full response
+                generated_content = False
+                
                 async for partial_response in response_stream:
                     # Only process display updates if content has changed
                     content_changed = False
@@ -506,6 +533,7 @@ async def main_conversation_loop(
                         if chunk:  # Only update if there's actual content
                             full_ai_message_content += chunk
                             content_changed = True
+                            generated_content = True  # Mark that we've gotten actual content
                         
                         # Update accumulated content for logging
                         accumulated_response = full_ai_message_content
@@ -571,18 +599,41 @@ async def main_conversation_loop(
                     
                     # Check if complete
                     if hasattr(partial_response, 'done') and partial_response.done:
-                        # Final log of the complete response - only if not already logged
+                        # Final log of the complete response with thinking content
                         if not current_turn_logged:
-                            append_to_log_file(log_filename, current_speaker, full_ai_message_content, partial=False)
+                            append_to_log_file(
+                                log_filename, 
+                                current_speaker, 
+                                full_ai_message_content,
+                                thinking=full_ai_thinking_content, 
+                                partial=False
+                            )
                             current_turn_logged = True
                         break
+                
+                # If thinking finished but no actual content was generated, continue waiting
+                if not generated_content and full_ai_thinking_content and not full_ai_message_content:
+                    if client.debug:
+                        toc.fancy_print(console, f"Warning: Thinking completed but no content generated. Continuing to wait...", style="yellow")
+                    
+                    # Wait for a small delay and continue the loop with the same speaker
+                    await asyncio.sleep(0.5)
+                    # Don't swap speakers for the next iteration
+                    current_speaker, other_speaker = other_speaker, current_speaker
+                    continue
                 
                 # Move the remaining code outside the streaming loop
                 conversation_log.append((current_speaker, full_ai_message_content))
                 
-                # Ensure the final response is logged
+                # Ensure the final response is logged - if not logged during streaming
                 if not current_turn_logged:
-                    append_to_log_file(log_filename, current_speaker, full_ai_message_content, partial=False)
+                    append_to_log_file(
+                        log_filename, 
+                        current_speaker, 
+                        full_ai_message_content,
+                        thinking=full_ai_thinking_content, 
+                        partial=False
+                    )
                     current_turn_logged = True
                 
                 generated_tokens_this_turn = count_tokens(full_ai_message_content)
@@ -631,14 +682,26 @@ async def main_conversation_loop(
         except KeyboardInterrupt:
             # Ensure partial response is logged if interrupted
             if accumulated_response and not current_turn_logged:
-                append_to_log_file(log_filename, current_speaker, accumulated_response, partial=False)
+                append_to_log_file(
+                    log_filename, 
+                    current_speaker, 
+                    accumulated_response,
+                    thinking=full_ai_thinking_content, 
+                    partial=False
+                )
                 append_to_log_file(log_filename, "SYSTEM", "Conversation interrupted by user.", partial=False)
             
             layout["footer"].update(Text("Conversation interrupted by user.", style="bold yellow", justify="center"))
         except Exception as e:
             # Ensure partial response is logged if error occurs
             if accumulated_response and not current_turn_logged:
-                append_to_log_file(log_filename, current_speaker, accumulated_response, partial=False)
+                append_to_log_file(
+                    log_filename, 
+                    current_speaker, 
+                    accumulated_response,
+                    thinking=full_ai_thinking_content, 
+                    partial=False
+                )
                 append_to_log_file(log_filename, "SYSTEM", f"Error occurred: {str(e)}", partial=False)
             
             layout["footer"].update(Text(f"An error occurred: {e}", style="bold red", justify="center"))
