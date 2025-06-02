@@ -28,6 +28,7 @@ from tenacity import (
 
 # Constants
 CONCURRENT_MODELS = 1  # Only one model can be loaded at a time due to system constraints
+DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE = ["llama3.1:latest", "phi4:latest", "qwen2:7b"] # Models to attempt to unload
 OLLAMA_SERVER_NOT_RUNNING_MESSAGE = """
 [bold red]Ollama server is not running or not responsive at {base_url}.[/bold red]
 
@@ -82,6 +83,7 @@ class TonicOllamaClient:
         debug: bool = False,
         console: Optional[Console] = None,
         concurrent_models: int = CONCURRENT_MODELS,
+        models_to_unload_on_close: Optional[List[str]] = None, # New parameter
     ):
         if console is None:
             console = Console()
@@ -92,7 +94,7 @@ class TonicOllamaClient:
                 fancy_print(console, 
                     f"Warning: concurrent_models={concurrent_models} was requested but only {CONCURRENT_MODELS} is supported. Using {CONCURRENT_MODELS}.", 
                     style="yellow")
-            concurrent_models = CONCURRENT_MODELS
+            # concurrent_models = CONCURRENT_MODELS # This line was here, but self.concurrent_models below uses the class attribute
 
         self.config = ClientConfig(
             base_url=base_url,
@@ -103,17 +105,18 @@ class TonicOllamaClient:
         self.base_url = self.config.base_url
         self.max_server_startup_attempts = self.config.max_server_startup_attempts
         self.debug = self.config.debug
-        self.concurrent_models = self.config.concurrent_models
+        self.concurrent_models = self.config.concurrent_models # This should be CONCURRENT_MODELS
         self.console = console
         self.async_client: Optional[AsyncClient] = None
         self.conversations: Dict[str, List[Dict[str, Any]]] = {}
         
-        # Create a semaphore to limit concurrent model access - always use CONCURRENT_MODELS=1
-        self._model_semaphore = asyncio.Semaphore(CONCURRENT_MODELS)
+        self._model_semaphore = asyncio.Semaphore(CONCURRENT_MODELS) # Use the enforced CONCURRENT_MODELS
         
+        self.models_to_unload_on_close = models_to_unload_on_close if models_to_unload_on_close is not None else DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE.copy()
+
         if self.debug:
             fancy_print(self.console, 
-                f"Initialized TonicOllamaClient (base_url={base_url}, concurrent_models={CONCURRENT_MODELS})", 
+                f"Initialized TonicOllamaClient (base_url={base_url}, concurrent_models={self.concurrent_models})", 
                 style="dim blue")
 
     def get_async_client(self) -> AsyncClient:
@@ -307,6 +310,58 @@ class TonicOllamaClient:
                     fancy_print(self.console, 
                         f"Released model semaphore for embeddings with '{model}'", 
                         style="dim blue")
+
+    async def close(self):
+        """
+        Attempt to unload specified models and close the underlying HTTP client.
+        This is a best-effort operation.
+        """
+        if self.debug:
+            fancy_print(self.console, "Attempting to close TonicOllamaClient and unload models...", style="dim blue")
+
+        ollama_client_instance = self.async_client # Use the instance variable
+
+        if ollama_client_instance:
+            for model_name in self.models_to_unload_on_close:
+                try:
+                    if self.debug:
+                        fancy_print(self.console, f"  Attempting to unload model: {model_name} (keep_alive='0s')", style="dim blue")
+                    # Make a minimal request with keep_alive: "0s"
+                    await ollama_client_instance.generate(
+                        model=model_name,
+                        prompt=".", # Minimal non-empty prompt
+                        options={"num_predict": 1}, # Predict only 1 token
+                        keep_alive="0s" # Signal to unload
+                    )
+                    if self.debug:
+                        fancy_print(self.console, f"    Unload request sent for {model_name}.", style="dim green")
+                except ResponseError as e:
+                    if self.debug:
+                        if e.status_code == 404:
+                            fancy_print(self.console, f"    Model {model_name} not found or not loaded during close. (Error: {e})", style="dim yellow")
+                        else:
+                            fancy_print(self.console, f"    API error during unload attempt for model {model_name}: {e}", style="dim red")
+                except Exception as e:
+                    if self.debug:
+                        fancy_print(self.console, f"    Unexpected error during unload attempt for model {model_name}: {e}", style="dim red")
+            
+            # Close the underlying httpx client
+            if hasattr(ollama_client_instance, '_client') and ollama_client_instance._client:
+                try:
+                    if self.debug:
+                        fancy_print(self.console, "  Closing underlying HTTP client...", style="dim blue")
+                    await ollama_client_instance._client.aclose()
+                    if self.debug:
+                        fancy_print(self.console, "    Underlying HTTP client closed.", style="dim green")
+                except Exception as e:
+                    if self.debug:
+                        fancy_print(self.console, f"    Error closing underlying HTTP client: {e}", style="dim red")
+            
+            self.async_client = None # Clear the client instance
+
+        if self.debug:
+            fancy_print(self.console, "TonicOllamaClient close operation finished.", style="dim blue")
+
 
 def create_client(
     base_url: str = "http://localhost:11434",
