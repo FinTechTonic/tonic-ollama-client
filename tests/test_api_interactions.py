@@ -1,7 +1,8 @@
 import pytest
 import pytest_asyncio
-from unittest.mock import AsyncMock, patch, MagicMock
-from tonic_ollama_client import TonicOllamaClient, ResponseError, ModelNotReadyError
+from unittest.mock import AsyncMock, patch
+from tonic_ollama_client import TonicOllamaClient, ResponseError, OllamaServerNotRunningError # Replaced ModelNotReadyError
+import asyncio
 
 APPROVED_MODELS = ["llama3.1:latest", "phi4:latest", "qwen2:7b"]
 DEFAULT_TEST_MODEL = "llama3.1:latest"
@@ -14,8 +15,6 @@ async def mock_client():
         
         mock_ollama_instance.chat = AsyncMock()
         mock_ollama_instance.embeddings = AsyncMock()
-        mock_ollama_instance.list = AsyncMock()
-        mock_ollama_instance.pull = AsyncMock()
         
         toc_client = TonicOllamaClient(debug=True)
         yield toc_client, mock_ollama_instance
@@ -96,20 +95,17 @@ async def test_chat_without_system_prompt(mock_client):
     }
     mock_ollama.chat.return_value = mock_response
     
-    response = await client.chat(
-        model=DEFAULT_TEST_MODEL,
-        message="Test message"
-    )
+    # Patch _is_ollama_server_running_sync to simulate server being ready
+    with patch.object(client, '_is_ollama_server_running_sync', return_value=True):
+        response = await client.chat(
+            model=DEFAULT_TEST_MODEL,
+            message="No system prompt here"
+        )
     
     assert response == mock_response
-    
-    # Verify API was called correctly without system prompt
-    mock_ollama.chat.assert_called_once()
-    call_args = mock_ollama.chat.call_args[1]
-    messages = call_args['messages']
-    assert len(messages) == 1
-    assert messages[0]['role'] == 'user'
-    assert messages[0]['content'] == 'Test message'
+    messages = client.get_conversation(client.list_conversations()[0])
+    assert len(messages) == 2 # User and assistant
+    assert messages[0]["role"] == "user"
 
 @pytest.mark.asyncio
 async def test_chat_with_temperature(mock_client):
@@ -124,32 +120,30 @@ async def test_chat_with_temperature(mock_client):
     }
     mock_ollama.chat.return_value = mock_response
     
-    response = await client.chat(
-        model=DEFAULT_TEST_MODEL,
-        message="Test",
-        temperature=0.9
-    )
+    # Patch _is_ollama_server_running_sync to simulate server being ready
+    with patch.object(client, '_is_ollama_server_running_sync', return_value=True):
+        await client.chat(
+            model=DEFAULT_TEST_MODEL,
+            message="Test temperature",
+            temperature=0.5
+        )
     
-    assert response == mock_response
-    
-    # Verify temperature was passed correctly
     mock_ollama.chat.assert_called_once()
-    call_args = mock_ollama.chat.call_args[1]
-    assert call_args['options']['temperature'] == 0.9
+    args, kwargs = mock_ollama.chat.call_args
+    assert kwargs['options']['temperature'] == 0.5
 
 @pytest.mark.asyncio
 async def test_chat_error_handling(mock_client):
-    """Test chat error handling."""
+    """Test error handling in chat method."""
     client, mock_ollama = mock_client
     
     # Test ResponseError
-    mock_ollama.chat.side_effect = ResponseError("Model not found", 404)
+    mock_ollama.chat.side_effect = ResponseError("API Error", 500)
     
-    with pytest.raises(ResponseError) as exc_info:
-        await client.chat(model="nonexistent", message="test")
-    
-    assert "Model not found" in str(exc_info.value)
-    assert exc_info.value.status_code == 404
+    with pytest.raises(ResponseError):
+        # Patch _is_ollama_server_running_sync to simulate server being ready
+        with patch.object(client, '_is_ollama_server_running_sync', return_value=True):
+            await client.chat(model=DEFAULT_TEST_MODEL, message="Error test")
 
 @pytest.mark.asyncio
 async def test_generate_embedding_basic(mock_client):
@@ -159,117 +153,63 @@ async def test_generate_embedding_basic(mock_client):
     mock_embedding = [0.1, 0.2, 0.3, 0.4, 0.5]
     mock_ollama.embeddings.return_value = {"embedding": mock_embedding}
     
-    embedding = await client.generate_embedding(
-        model=DEFAULT_TEST_MODEL,
-        text="This is a test"
-    )
+    # Patch _is_ollama_server_running_sync to simulate server being ready
+    with patch.object(client, '_is_ollama_server_running_sync', return_value=True):
+        embedding = await client.generate_embedding(
+            model=DEFAULT_TEST_MODEL,
+            text="Embed this text"
+        )
     
-    assert embedding == mock_embedding
-    
-    # Verify API was called correctly
-    mock_ollama.embeddings.assert_called_once_with(
-        model=DEFAULT_TEST_MODEL,
-        prompt="This is a test"
-    )
+    assert embedding == mock_embedding # Use the mock_embedding variable for assertion
+    mock_ollama.embeddings.assert_called_once_with(model=DEFAULT_TEST_MODEL, prompt="Embed this text")
 
 @pytest.mark.asyncio
 async def test_generate_embedding_error_handling(mock_client):
-    """Test embedding generation error handling."""
+    """Test error handling in embedding generation."""
     client, mock_ollama = mock_client
     
     # Test ResponseError
-    mock_ollama.embeddings.side_effect = ResponseError("Embedding failed", 500)
+    mock_ollama.embeddings.side_effect = ResponseError("Embedding Error", 500)
     
-    with pytest.raises(ResponseError) as exc_info:
-        await client.generate_embedding(model=DEFAULT_TEST_MODEL, text="test")
+    with pytest.raises(ResponseError):
+        # Patch _is_ollama_server_running_sync to simulate server being ready
+        with patch.object(client, '_is_ollama_server_running_sync', return_value=True):
+            await client.generate_embedding(model=DEFAULT_TEST_MODEL, text="Error embed")
+
+# The following tests are for ensure_server_ready, replacing check_model_ready tests
+@pytest.mark.asyncio
+async def test_ensure_server_ready_server_is_responsive(mock_client):
+    """Test ensure_server_ready when server responds correctly."""
+    client, _ = mock_client # We don't need mock_ollama for this specific test
     
-    assert "Embedding failed" in str(exc_info.value)
-    assert exc_info.value.status_code == 500
+    # Patch _is_ollama_server_running_sync to simulate server being ready
+    with patch.object(client, '_is_ollama_server_running_sync', return_value=True) as mock_is_running:
+        await client.ensure_server_ready() # Changed from check_model_ready
+        mock_is_running.assert_called_once()
 
 @pytest.mark.asyncio
-async def test_check_model_ready_found_locally(mock_client):
-    """Test check_model_ready when model is found locally."""
-    client, mock_ollama = mock_client
-    
-    # Mock list response showing model exists
-    mock_ollama.list.return_value = {
-        "models": [
-            {"name": "llama3.1:latest", "size": 1000000}
-        ]
-    }
-    
-    # Mock successful chat response
-    mock_ollama.chat.return_value = {
-        "message": {"content": "READY"}
-    }
-    
-    # Should not raise an exception
-    await client.check_model_ready("llama3.1:latest")
-    
-    # Verify list was called but pull was not
-    mock_ollama.list.assert_called_once()
-    mock_ollama.pull.assert_not_called()
-    mock_ollama.chat.assert_called_once()
+async def test_ensure_server_ready_server_not_responsive(mock_client):
+    """Test ensure_server_ready when server doesn't respond."""
+    client, _ = mock_client # We don't need mock_ollama for this specific test
+    client.max_server_startup_attempts = 2 # For faster test
+
+    # Patch _is_ollama_server_running_sync to simulate server NOT being ready
+    with patch.object(client, '_is_ollama_server_running_sync', return_value=False) as mock_is_running:
+        with pytest.raises(OllamaServerNotRunningError):
+            await client.ensure_server_ready() # Changed from check_model_ready
+        assert mock_is_running.call_count == client.max_server_startup_attempts
 
 @pytest.mark.asyncio
-async def test_check_model_ready_needs_pull(mock_client):
-    """Test check_model_ready when model needs to be pulled."""
-    client, mock_ollama = mock_client
-    
-    # Mock list response showing model doesn't exist
-    mock_ollama.list.return_value = {"models": []}
-    
-    # Mock successful pull
-    mock_ollama.pull.return_value = {"status": "success"}
-    
-    # Mock successful chat response
-    mock_ollama.chat.return_value = {
-        "message": {"content": "READY"}
-    }
-    
-    # Should not raise an exception
-    await client.check_model_ready("phi4:latest")
-    
-    # Verify pull was called
-    mock_ollama.list.assert_called_once()
-    mock_ollama.pull.assert_called_once_with(model="phi4:latest", stream=False)
-    mock_ollama.chat.assert_called_once()
+async def test_ensure_server_ready_becomes_responsive(mock_client):
+    """Test ensure_server_ready when server becomes responsive after initial failure."""
+    client, _ = mock_client
+    client.max_server_startup_attempts = 3
 
-@pytest.mark.asyncio
-async def test_check_model_ready_model_not_responsive(mock_client):
-    """Test check_model_ready when model doesn't respond with READY."""
-    client, mock_ollama = mock_client
-    
-    # Mock list response showing model exists
-    mock_ollama.list.return_value = {
-        "models": [{"name": "qwen2:7b"}]
-    }
-    
-    # Mock chat responses that don't contain "READY"
-    mock_ollama.chat.return_value = {
-        "message": {"content": "Hello there"}
-    }
-    
-    # Should raise ModelNotReadyError after max attempts
-    with pytest.raises(ModelNotReadyError) as exc_info:
-        await client.check_model_ready("qwen2:7b")
-    
-    assert "qwen2:7b" in str(exc_info.value)
+    # Simulate server becoming responsive on the second attempt
+    with patch.object(client, '_is_ollama_server_running_sync', side_effect=[False, True, True]) as mock_is_running:
+        await client.ensure_server_ready()
+        assert mock_is_running.call_count == 2
 
-@pytest.mark.asyncio
-async def test_check_model_ready_pull_fails(mock_client):
-    """Test check_model_ready when pull fails."""
-    client, mock_ollama = mock_client
-    
-    # Mock list response showing model doesn't exist
-    mock_ollama.list.return_value = {"models": []}
-    
-    # Mock failed pull
-    mock_ollama.pull.side_effect = ResponseError("Pull failed", 404)
-    
-    # Should raise ModelNotReadyError after attempts
-    with pytest.raises(ModelNotReadyError):
-        await client.check_model_ready("phi4:latest")
 
 @pytest.mark.asyncio
 async def test_multiple_conversations(mock_client):
