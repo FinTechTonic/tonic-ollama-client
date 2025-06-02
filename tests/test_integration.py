@@ -7,6 +7,7 @@ SUPPORTED_MODELS_LIST = [
     "llama3.1:latest",
     "phi4:latest",
     "qwen2:7b",
+    "mistral:latest",
 ]
 
 @pytest_asyncio.fixture(scope="function")
@@ -25,10 +26,7 @@ class BaseModelTests:
         if not model_to_check:
             pytest.skip("MODEL_NAME not available for test")
         try:
-            await client.ensure_server_ready() # Changed from check_model_ready
-            # Add a quick check if model exists by trying a very simple chat
-            # This is because ensure_server_ready no longer guarantees model presence.
-            # This is a basic check; a more robust one might involve client.list() if that API is exposed/used.
+            await client.ensure_server_ready()
             try:
                 await client.get_async_client().show(model=model_to_check)
             except toc.ResponseError as e:
@@ -39,7 +37,7 @@ class BaseModelTests:
 
         except toc.OllamaServerNotRunningError:
             pytest.skip("Ollama server not running. Start it with 'ollama serve'")
-        except Exception as e: # Catch other unexpected errors during setup
+        except Exception as e:
             pytest.fail(f"Unexpected error during server/model readiness check for {model_to_check}: {e}")
 
 

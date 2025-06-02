@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 from tonic_ollama_client import TonicOllamaClient, ResponseError, OllamaServerNotRunningError # Replaced ModelNotReadyError
 import asyncio
 
-APPROVED_MODELS = ["llama3.1:latest", "phi4:latest", "qwen2:7b"]
+APPROVED_MODELS = ["llama3.1:latest", "phi4:latest", "qwen2:7b", "mistral:latest"]
 DEFAULT_TEST_MODEL = "llama3.1:latest"
 
 class TestErrorHandling:
@@ -17,8 +17,6 @@ class TestErrorHandling:
             mock_instance = MockedAsyncClient.return_value
             mock_instance.chat = AsyncMock()
             mock_instance.embeddings = AsyncMock()
-            # mock_instance.list = AsyncMock() # No longer directly used by client for readiness
-            # mock_instance.pull = AsyncMock() # No longer directly used by client for readiness
             
             # Patch _is_ollama_server_running_sync for tests that need to control server status
             with patch.object(TonicOllamaClient, '_is_ollama_server_running_sync', return_value=True) as mock_server_check:
@@ -90,11 +88,6 @@ class TestErrorHandling:
         
         assert exc_info.value.status_code == 422
     
-    # test_check_model_ready_chat_error is removed as check_model_ready is gone
-    # and ensure_server_ready doesn't involve chat.
-    
-    # test_model_not_ready_error_details is removed as ModelNotReadyError is gone.
-
     @pytest.mark.asyncio
     async def test_conversation_errors(self):
         """Test conversation management error scenarios."""
@@ -146,15 +139,6 @@ class TestErrorHandling:
         mock_ollama.embeddings.reset_mock()
         mock_ollama.embeddings.return_value = {"embedding": [0.1,0.2]}
         
-        # The following part tested check_model_ready with list/pull errors,
-        # which is no longer relevant. New tests for ensure_server_ready are needed.
-        # For example, test ensure_server_ready when _is_ollama_server_running_sync returns False repeatedly.
-        # mock_ollama.list.side_effect = TypeError("List call returned unexpected data type")
-        # mock_ollama.pull.return_value = {"status": "success"} 
-        # client.max_server_startup_attempts = 1 # Use new attribute name
-        # with pytest.raises(OllamaServerNotRunningError): # Expect server error now
-        #      await client.ensure_server_ready() 
-    
     @pytest.mark.asyncio
     async def test_unexpected_exceptions(self, mock_client_with_errors):
         """Test handling of unexpected exceptions."""

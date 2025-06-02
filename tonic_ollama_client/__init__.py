@@ -28,7 +28,7 @@ from tenacity import (
 
 # Constants
 CONCURRENT_MODELS = 1  # Only one model can be loaded at a time due to system constraints
-DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE = ["llama3.1:latest", "phi4:latest", "qwen2:7b"] # Models to attempt to unload
+DEFAULT_MODELS_TO_UNLOAD_ON_CLOSE = ["llama3.1:latest", "phi4:latest", "qwen2:7b", "mistral:latest"] # Models to attempt to unload
 OLLAMA_SERVER_NOT_RUNNING_MESSAGE = """
 [bold red]Ollama server is not running or not responsive at {base_url}.[/bold red]
 

@@ -1,7 +1,5 @@
-import pytest
-import pytest_asyncio
 from unittest.mock import patch
-from rich.console import Console # Ensure Console is imported directly
+from rich.console import Console
 from tonic_ollama_client import TonicOllamaClient, create_client, ClientConfig
 
 class TestClientConfiguration:

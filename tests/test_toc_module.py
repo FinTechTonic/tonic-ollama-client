@@ -2,17 +2,13 @@ import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 from rich.console import Console
-# import os # Not used
-# import subprocess # Not used
 from tonic_ollama_client import (
     TonicOllamaClient,
     create_client,
     OllamaServerNotRunningError,
-    ResponseError,
 )
-from ollama import AsyncClient as OllamaAsyncClient # Keep for type hinting if needed, but not for isinstance on mock
 
-APPROVED_MODELS = ["llama3.1:latest", "phi4:latest", "qwen2:7b"]
+APPROVED_MODELS = ["llama3.1:latest", "phi4:latest", "qwen2:7b", "mistral:latest"]
 DEFAULT_TEST_MODEL = "llama3.1:latest"
 
 
