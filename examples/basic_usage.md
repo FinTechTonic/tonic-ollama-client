@@ -5,7 +5,7 @@ This document explains the `basic_usage.py` script, which demonstrates the core 
 ## Prerequisites
 
 1.  **Python Environment**: Ensure you have Python 3.11+ installed.
-2.  **Tonic Ollama Client & Dependencies**: Install the client library and its dependencies, including `questionary`. If you have cloned the repository, you can install it in editable mode from the project root:
+2.  **Tonic Ollama Client & Dependencies**: Install the client library and its dependencies. If you have cloned the repository, you can install it in editable mode from the project root:
     ```bash
     # Make sure you are in the root of the tonic-ollama-client repository
     pip install -e .
@@ -17,7 +17,7 @@ This document explains the `basic_usage.py` script, which demonstrates the core 
     ```bash
     ollama serve
     ```
-4.  **Model Availability**: The script will attempt to list models available on your Ollama server. If it cannot, it will fall back to a default list. Ensure at least one model you intend to use is available (e.g., `ollama pull llama3.1:latest`). The script will warn you if the selected model is not found on the server.
+4.  **Model Availability**: The script will attempt to list models available on your Ollama server using `toc.get_ollama_models_sync()`. If it cannot detect any models, it will fall back to a default list. Ensure at least one model you intend to use is available (e.g., `ollama pull llama3.1:latest`). The script will warn you if the selected model is not found on the server.
 
 ## Running the Example
 
@@ -36,87 +36,190 @@ The `basic_usage.py` script showcases the following features using a `rich.live.
 
 Before any operations begin, the script provides an interactive model selection menu:
 ```python
-# import questionary
-# import ollama # For synchronous ollama.list()
+# Fetch models using the client's built-in function
+fetched_models = toc.get_ollama_models_sync()
 
-# fetched_models = get_ollama_models_sync() # Attempts to get local models
-# model_choices = []
-# # ... populates choices with fetched or default models
-# model_choices.append(CUSTOM_MODEL_OPTION)
+# Build choice list with detected or default models
+model_choices = []
+if fetched_models:
+    model_choices.extend(fetched_models)
+else:
+    model_choices.extend(DEFAULT_AVAILABLE_MODELS)
 
-# selected_model_or_custom = await questionary.select(...).ask_async()
+# Always include custom model option
+model_choices.append(questionary.Separator())
+model_choices.append(CUSTOM_MODEL_OPTION)
 
-# if selected_model_or_custom == CUSTOM_MODEL_OPTION:
-#     MODEL_NAME = await questionary.text(...).ask_async()
-# else:
-#     MODEL_NAME = selected_model_or_custom
+# Interactive selection
+selected_model_or_custom = await questionary.select(
+    "Please select a model to use for this session:",
+    choices=model_choices,
+    use_arrow_keys=True
+).ask_async()
 ```
-*   It first tries to **dynamically fetch models** currently available on your local Ollama server using `ollama.list()`.
-*   If successful, these models are presented in the selection list. Otherwise, a **default list of common models** is shown.
-*   You can navigate this list using **up/down arrow keys**.
-*   An option **"Enter Custom Model Name..."** is always available. If selected, you'll be prompted to type the model name (e.g., `your-custom-model:tag`).
-*   The chosen `MODEL_NAME` is then used for all subsequent operations.
+
+**Features:**
+*   **Dynamic Model Detection**: Uses `toc.get_ollama_models_sync()` to fetch models currently available on your local Ollama server
+*   **Fallback to Defaults**: If model detection fails, shows a predefined list of common models
+*   **Arrow Key Navigation**: Navigate the selection list using up/down arrow keys
+*   **Custom Model Entry**: Option to enter any custom model name (e.g., `your-custom-model:tag`)
+*   **Graceful Exit**: Handles user cancellation (Esc key) appropriately
 
 ### 1. Client Creation
 
-A `TonicOllamaClient` instance is created:
+A `TonicOllamaClient` instance is created with debug output disabled for cleaner live display:
 ```python
-client = toc.create_client(debug=False) # debug=False for cleaner live display
+client = toc.create_client(debug=False)
 ```
-The status log will show the client's base URL and concurrent models limit.
+The status display shows the client's base URL upon successful creation.
 
-### 2. Ensuring Server Readiness & Model Check
+### 2. Server Readiness & Model Availability Check
 
-*   **Server Readiness**:
-    ```python
-    await client.ensure_server_ready()
-    ```
-    Checks if the Ollama server is responsive, with retries.
+**Server Readiness:**
+```python
+await client.ensure_server_ready()
+```
+Checks if the Ollama server is responsive with configurable retry attempts.
 
-*   **Optional Model Availability Check**:
-    ```python
-    # await client.get_async_client().show(model=MODEL_NAME)
-    ```
-    Verifies if the *selected* model is available on the server. A warning is shown if not.
+**Model Availability Check:**
+```python
+await client.get_async_client().show(model=MODEL_NAME)
+```
+Verifies if the selected model is available on the server. Shows a warning with pull suggestion if the model is not found (404 error).
 
-### 3. Basic Chat
+### 3. Basic Chat Interaction
 
-A simple chat interaction with the *selected* model:
+Demonstrates a simple chat interaction with the selected model:
 ```python
 chat_response = await client.chat(
     model=MODEL_NAME,
     message="What is the capital of France? Respond concisely.",
     system_prompt="You are a helpful AI assistant."
 )
-# ... logs user message and AI response
+```
+Logs both the user message and AI response in the live status display.
+
+### 4. Advanced Conversation Management
+
+Shows multi-turn conversation capabilities with context retention:
+
+**Create Conversation:**
+```python
+conv_id = await client.create_conversation("my-live-test-conversation")
 ```
 
-### 4. Conversation Management
+**Multi-turn Chat with Context:**
+```python
+# First message with system prompt
+await client.chat(
+    model=MODEL_NAME,
+    message="Hello! My favorite color is blue.",
+    conversation_id=conv_id,
+    system_prompt="Remember details about the user. Be friendly and conversational."
+)
 
-Demonstrates multi-turn conversation capabilities with the *selected* model:
-*   **Create, Send Messages, Get History, List, Clear, Delete**: Operations are performed similarly to the previous version, but all use the dynamically selected `MODEL_NAME`.
+# Follow-up messages that reference previous context
+await client.chat(
+    model=MODEL_NAME,
+    message="What is my favorite color?",
+    conversation_id=conv_id
+)
+
+# Additional contextual conversations
+await client.chat(
+    model=MODEL_NAME,
+    message="Thanks! Based on my favorite color, can you suggest a type of flower I might like?",
+    conversation_id=conv_id
+)
+```
+
+**Conversation Operations:**
+- **History Retrieval**: `client.get_conversation(conv_id)`
+- **Clear Messages**: `client.clear_conversation(conv_id)`  
+- **Delete Conversation**: `client.delete_conversation(conv_id)`
 
 ### 5. Embedding Generation
 
-Generates text embeddings using the *selected* model:
+Generates text embeddings using the selected model:
 ```python
 embedding = await client.generate_embedding(
     model=MODEL_NAME,
     text="Ollama is a cool tool for running LLMs locally."
 )
-# ... logs embedding details
+```
+Displays embedding dimensions and confirms successful generation.
+
+### 6. Comprehensive Error Handling
+
+The script handles various error scenarios:
+
+**Server Errors:**
+```python
+except toc.OllamaServerNotRunningError as e:
+    update_status(f"Ollama Server Error: {e}", style="bold red")
 ```
 
-### 6. Error Handling & Client Closing
+**API Response Errors:**
+```python
+except toc.ResponseError as e:
+    update_status(f"Ollama API Response Error (Status {e.status_code}): {e.error}", style="bold red")
+```
 
-*   **Error Handling**: The script robustly handles common errors (`OllamaServerNotRunningError`, `ResponseError`, `ConnectionError`, general `Exception`, `KeyboardInterrupt` during selection), updating the status log within the `Live` display.
-*   **Client Closing**: A `finally` block ensures `await client.close()` is called, which attempts to unload predefined models and close the HTTP client. This is also reflected in the progress bar and status log.
+**Connection Issues:**
+```python
+except ConnectionError as e:
+    update_status(f"Connection Error: {e}", style="bold red")
+```
+
+**User Cancellation:**
+```python
+except Exception as e:
+    if isinstance(e, KeyboardInterrupt):
+        update_status("Model selection or input cancelled by user.", style="bold yellow")
+```
+
+### 7. Model-Specific Client Cleanup
+
+Enhanced cleanup with model-specific unloading:
+```python
+# In the finally block
+await client.close(model_to_unload=MODEL_NAME)
+```
+
+**Features:**
+- **Targeted Unloading**: Unloads only the specific model used in the session
+- **Graceful Cleanup**: Properly closes HTTP connections and releases resources
+- **Progress Tracking**: Updates progress bar and status display during cleanup
 
 ## Live Display Interface
 
-The script uses `rich.live.Live` to provide a dynamic, non-scrolling (mostly) interface:
-*   **Main Panel**: Shows the script title and the selected model.
-*   **Progress Bar**: Displays overall progress through the predefined steps. The description of the current step is updated.
-*   **Status Log Panel**: Shows detailed messages for each operation, including outputs from the client (like AI responses) and status updates (e.g., "Ollama server is responsive.").
+The script uses `rich.live.Live` to provide a dynamic, non-scrolling interface:
 
-This interface aims to provide a clear and interactive view of the script's execution flow.
+**Components:**
+- **Header Panel**: Shows script title and selected model name
+- **Progress Bar**: 13-step progress indicator with current step description and completion percentage
+- **Dynamic Status Area**: Shows current operation details, user-AI interactions, and status messages
+
+**Key Features:**
+- **Non-scrolling Updates**: Status area content is replaced (not appended) for each step
+- **Rich Formatting**: Color-coded messages (green for success, yellow for warnings, red for errors)
+- **Real-time Progress**: Progress bar updates as operations complete
+- **Concise Output**: Long content is truncated to maintain clean display
+
+## Supported Models
+
+The script works with any Ollama-compatible model, with built-in support for:
+- `llama3.1:latest`
+- `phi4:latest` 
+- `qwen2:7b`
+- `mistral:latest`
+
+Custom models can be entered manually during the selection process.
+
+## Error Recovery
+
+The script includes robust error recovery:
+- **Automatic Retries**: Uses tenacity for transient connection issues
+- **Graceful Degradation**: Continues execution when possible after non-fatal errors
+- **Clear Error Messages**: Provides actionable feedback for common issues
+- **Resource Cleanup**: Ensures proper cleanup even when errors occur

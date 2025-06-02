@@ -282,7 +282,6 @@ async def main():
             # Set the final status display content
             current_status_lines.clear()
             current_status_lines.extend(final_status_messages)
-            # Fix: Use Text.from_markup() instead of raw text with markup
             current_status_lines.append(Text("\n", style=""))  # Add a blank line
             current_status_lines.append(Text("End of example.", style="bold blue"))
             _render_status_display()
