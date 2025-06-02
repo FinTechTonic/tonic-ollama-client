@@ -18,27 +18,31 @@ import tonic_ollama_client as toc
 
 # Configuration
 DEFAULT_ENCODING = "cl100k_base"
-REPROMPT_TOKEN_THRESHOLD = 200  # Remind persona after this many generated tokens
+REPROMPT_TOKEN_THRESHOLD = 200
 
 # System prompt template
 GENERIC_SYSTEM_PROMPT_TEMPLATE = """
-You are {persona_name}. Embody this historical figure completely. Your thoughts, reasoning, and responses must perfectly reflect their knowledge, personality, and communication style.
+You are {persona_name}. Embody this historical figure completely. ALWAYS speak in the first person AS {persona_name}. Never break character or refer to {persona_name} in the third person.
 
 **Persona Profile:**
 {persona_description}
 
 **Conversation Directives (Strict Adherence Required):**
-1.  **Unyielding Authenticity:** Consistently channel {persona_name}'s distinct voice, perspective, and mannerisms in every interaction.
-2.  **Historical Foundation:** Ground all statements and reasoning in {persona_name}'s actual historical knowledge, expertise, and worldview.
-3.  **Engaged Dialogue:** Respond thoughtfully and directly to the other speaker's points, fostering a meaningful exchange.
-4.  **Seek Clarity (In Character):** If any part of the conversation is unclear, politely request clarification as {persona_name} would.
-5.  **Proactive Contribution:** Actively ask questions and express opinions that are authentically aligned with {persona_name}'s known views and intellectual curiosities.
-6.  **Natural Conversational Flow:** Maintain a fluid and natural conversational rhythm. Introduce related topics that would genuinely interest {persona_name}.
-7.  **Optimal Response Length:** Aim for responses of 1-3 paragraphs to encourage a dynamic, back-and-forth dialogue.
-8.  **Authentic Lexicon:** Employ vocabulary, references, and illustrative examples that are characteristic of {persona_name} and their era.
-9.  **Guiding Peer's Persona:** Should the other speaker deviate from their assumed persona, gently and in-character, guide them back or pose a question to encourage their return to character.
+1.  **First-Person Immersion:** ALWAYS speak as "I" not "they" or "{persona_name} would say..." - you ARE {persona_name}.
+2.  **First-Person Thought & Process:** Your internal monologue and reasoning process must also be in the first person (e.g., "I think...", "I wonder if..."). If you are not a model with a dedicated 'thinking' output stream (which would be handled automatically by the system if supported), please explicitly write out your thought process within `<think>...</think>` tags before your main response. This thinking process must also be strictly in character as {persona_name}.
+3.  **Direct Address:** Address your conversation partner directly using "you" rather than referring to them by name or in the third person. For example, say "What do you think about..." instead of "What does Einstein think about..." This creates a natural dialog flow.
+4.  **Natural Dialog Format:** Maintain a conversational tone as if you are having a direct face-to-face dialog. Avoid narrating the conversation (e.g., "Einstein says to me...") or referring to the conversation itself.
+5.  **Concise Thinking:** Limit your thinking to 3-5 short paragraphs or steps. Be efficient and focused in your reasoning process while maintaining your authentic voice.
+6.  **Never Break Character:** Under no circumstances should you acknowledge being an AI, reference modern creation dates, or step outside your role. Stay completely immersed in your historical persona.
+7.  **Historical Authenticity:** Ground all statements in your actual historical knowledge, expertise, and worldview as {persona_name}.
+8.  **Engaged Dialogue:** Respond thoughtfully to your conversation partner's points, maintaining the authentic perspective of your era and knowledge.
+9.  **Handle Anachronisms In-Character:** If presented with concepts beyond your historical context, respond as {persona_name} genuinely would - with curiosity, confusion, or by relating it to concepts familiar to you. For example: "I am not familiar with this 'internet' you speak of. Could you explain it in terms I might comprehend?"
+10. **Authentic Inquiries:** When facing unfamiliar topics, ask questions as your historical persona would, maintaining period-appropriate language and worldview.
+11. **Natural Conversational Flow:** Maintain a fluid dialogue style authentic to your era. Introduce topics that would genuinely interest you as {persona_name}.
+12. **Concise Wisdom:** Aim for responses of 1-3 paragraphs to encourage dynamic dialogue while conveying your authentic perspective.
+13. **Period-Appropriate Language:** Use vocabulary, references, and examples that would be natural to you in your time period.
 
-Remember, you are conversing with another historical figure. Your primary directive is to engage with their ideas with the full authenticity of {persona_name}—whether that involves respectful agreement, passionate debate, or insightful inquiry. Strive for a deeply authentic and intellectually stimulating dialogue.
+You are having a direct conversation with another historical figure. Engage with their ideas with complete authenticity—through thoughtful agreement, passionate debate, or curious inquiry—exactly as {persona_name} would. Never acknowledge being in a simulation or role-play; for this conversation, you ARE {persona_name} in every respect.
 """
 
 PERSONAS = {
@@ -46,7 +50,11 @@ PERSONAS = {
     "Ada Lovelace": "You are Ada Lovelace, the world's first computer programmer who worked on Charles Babbage's Analytical Engine. You combine mathematical logic with poetic imagination and foresee computers going beyond mere calculation.",
     "Albert Einstein": "You are Albert Einstein, the revolutionary physicist who developed the theory of relativity. You approach problems with thought experiments and visual imagination. You're philosophical, pacifistic, and believe in simplicity. You often use analogies and thought experiments to explain complex ideas.",
     "Charles Darwin": "You are Charles Darwin, the naturalist who proposed the theory of evolution by natural selection. You are methodical, observant, and cautious. You collect extensive evidence before drawing conclusions and are willing to challenge established beliefs when evidence demands it.",
-    "Aristotle": "You are Aristotle, the ancient Greek philosopher who made foundational contributions to logic, metaphysics, ethics, and natural sciences. You approach knowledge systematically, categorizing, and analyzing concepts. You believe in empirical observation and logical reasoning as paths to understanding."
+    "Marie Curie": "You are Marie Curie, a pioneering physicist and chemist who discovered radium and polonium and conducted groundbreaking research on radioactivity. You are determined, meticulous, and dedicated to scientific inquiry despite significant obstacles. You believe in the practical application of scientific discoveries for the betterment of humanity.",
+    "Nikola Tesla": "You are Nikola Tesla, an eccentric inventor and electrical engineer who developed the alternating current electrical system. You have a photographic memory and powerful visualization abilities. Your mind works in flashes of insight and you're often decades ahead of your contemporaries in your thinking, with a particular fascination with wireless energy transmission.",
+    "Richard Feynman": "You are Richard Feynman, a Nobel Prize-winning theoretical physicist known for your work in quantum mechanics and particle physics. You combine brilliant scientific insight with playful curiosity and a gift for explaining complex concepts simply. You believe in the joy of discovery and the importance of not fooling yourself in scientific inquiry.",
+    "Aristotle": "You are Aristotle, the ancient Greek philosopher who made foundational contributions to logic, metaphysics, ethics, and natural sciences. You approach knowledge systematically, categorizing, and analyzing concepts. You believe in empirical observation and logical reasoning as paths to understanding.",
+    "Leonardo da Vinci": "You are Leonardo da Vinci, the Renaissance polymath whose interests spanned anatomy, engineering, astronomy, botany, and more. Your approach combines scientific precision with artistic sensibility. You are endlessly curious, filling notebooks with observations, questions, and detailed sketches to understand the world's patterns and mechanisms."
 }
 
 # Conversation starters
@@ -61,18 +69,72 @@ CONVERSATION_STARTERS = [
 ]
 
 # Model options
-DEFAULT_AVAILABLE_MODELS = ["llama3.1:latest", "phi4:latest", "qwen3:8b", "mistral:latest"]
+DEFAULT_AVAILABLE_MODELS = ["qwen3:8b", "llama3.1:latest", "phi4:latest", "mistral:latest"]
 CUSTOM_MODEL_OPTION = "Enter Custom Model Name..."
 PROGRESS_STEPS = [f"Step {i}" for i in range(20)]
 
 
 def clear_console():
     """Clear the console screen."""
-    os.system('cls' if os.name == 'nt' else 'clear')
+    # This function is now a no-op to prevent flickering
+    # Using Rich's Live display will handle updates without needing to clear
+    pass
 
 def get_timestamp():
     """Get current timestamp."""
     return datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+def create_log_file_header(persona1: str, persona2: str, model_name: str) -> str:
+    """Create the header for the log file and return the filename."""
+    epoch_timestamp = int(datetime.datetime.now().timestamp())
+    filename = f"convo_{epoch_timestamp}.log"
+    
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(f"# Conversation between {persona1} and {persona2}\n")
+        f.write(f"# Model: {model_name}\n")
+        f.write(f"# Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("#" + "="*79 + "\n\n")
+    
+    # Create a separate debug log if needed for partial responses
+    if os.environ.get("SAVE_PARTIAL_RESPONSES", "0") == "1":
+        debug_filename = f"convo_{epoch_timestamp}_debug.log"
+        with open(debug_filename, 'w', encoding='utf-8') as f:
+            f.write(f"# DEBUG LOG - Partial Responses\n")
+            f.write(f"# Conversation between {persona1} and {persona2}\n")
+            f.write(f"# Model: {model_name}\n")
+            f.write(f"# Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("#" + "="*79 + "\n\n")
+    else:
+        debug_filename = None
+    
+    return filename
+
+def append_to_log_file(filename: str, speaker: str, message: str, partial: bool = False):
+    """
+    Append a single message to the log file.
+    
+    Args:
+        filename: Path to the log file
+        speaker: Name of the speaker
+        message: Content of the message
+        partial: If True, marks this as a partial response (streaming)
+    """
+    # For partial responses, only log to debug file if enabled
+    if partial:
+        debug_filename = filename.replace(".log", "_debug.log")
+        if os.environ.get("SAVE_PARTIAL_RESPONSES", "0") == "1" and os.path.exists(debug_filename):
+            with open(debug_filename, 'a', encoding='utf-8') as f:
+                timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                f.write(f"[PARTIAL {timestamp}] <{speaker}>\n{message}\n</>\n\n")
+                f.flush()
+                os.fsync(f.fileno())
+        return
+    
+    # For complete responses, log in ChatML-like format
+    with open(filename, 'a', encoding='utf-8') as f:
+        f.write(f"<{speaker}>\n{message}\n</>\n\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 def count_tokens(text: str, encoding_name: str = DEFAULT_ENCODING) -> int:
     """Count tokens in text."""
@@ -92,8 +154,9 @@ def count_message_tokens(message: Dict[str, str], encoding_name: str = DEFAULT_E
 
 def log_conversation_to_file(persona1: str, persona2: str, conversation_history: List[Tuple[str, str]], model_name: str):
     """Save conversation to file."""
-    timestamp = get_timestamp()
-    filename = f"conversation_{persona1.replace(' ', '_')}_{persona2.replace(' ', '_')}_{timestamp}.log"
+    # Use epoch timestamp for the filename
+    epoch_timestamp = int(datetime.datetime.now().timestamp())
+    filename = f"convo_{epoch_timestamp}.log"
     
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(f"Conversation between {persona1} and {persona2}\n")
@@ -135,9 +198,13 @@ async def select_model(console: Console) -> str:
     model_choices.append(questionary.Separator())
     model_choices.append(CUSTOM_MODEL_OPTION)
 
+    # Find default model index
+    default_index = next((i for i, m in enumerate(model_choices) if "qwen3" in m.lower()), 0)
+
     selected_model_or_custom = await questionary.select(
         "Please select a model to use for this conversation:",
         choices=model_choices,
+        default=model_choices[default_index],
         use_arrow_keys=True,
         style=questionary.Style([('selected', 'fg:#673ab7 bold'), ('highlighted', 'fg:#673ab7 bold')]),
     ).ask_async()
@@ -157,11 +224,14 @@ async def select_persona(console: Console, exclude: Optional[str] = None) -> str
     """Select a persona."""
     options = list(PERSONAS.keys())
     
+    # Add "Random" option at the beginning
+    options.insert(0, "Random (Choose for me)")
+    
     if exclude and exclude in options:
         options.remove(exclude)
     
     console.print(Panel(
-        "Select a computer scientist persona",
+        "Select a historical persona",
         title="[bold blue]Persona Selection[/bold blue]",
         border_style="blue"
     ))
@@ -169,12 +239,22 @@ async def select_persona(console: Console, exclude: Optional[str] = None) -> str
     result = await questionary.select(
         "Choose a persona:",
         choices=options,
+        default="Random (Choose for me)",
         use_arrow_keys=True,
         style=questionary.Style([
             ('selected', 'fg:#673ab7 bold'),
             ('highlighted', 'fg:#673ab7 bold')
         ])
     ).ask_async()
+    
+    # Handle random selection
+    if result == "Random (Choose for me)":
+        import random
+        persona_options = list(PERSONAS.keys())
+        if exclude and exclude in persona_options:
+            persona_options.remove(exclude)
+        result = random.choice(persona_options)
+        console.print(f"[bold green]Randomly selected: {result}[/bold green]")
     
     return result
 
@@ -186,9 +266,14 @@ async def select_conversation_starter(console: Console) -> str:
         border_style="blue"
     ))
     
+    # Create options list with Random as first option
+    options = ["Random (Choose for me)"]
+    options.extend(CONVERSATION_STARTERS)
+    
     starter = await questionary.select(
         "Choose a conversation starter:",
-        choices=CONVERSATION_STARTERS,
+        choices=options,
+        default="Random (Choose for me)",
         use_arrow_keys=True,
         style=questionary.Style([
             ('selected', 'fg:#673ab7 bold'),
@@ -196,6 +281,15 @@ async def select_conversation_starter(console: Console) -> str:
         ])
     ).ask_async()
     
+    # Handle random selection
+    if starter == "Random (Choose for me)":
+        import random
+        # Get all options except "Random" and "Custom"
+        available_starters = [s for s in CONVERSATION_STARTERS if s != "Custom starter (type your own)..."]
+        starter = random.choice(available_starters)
+        console.print(f"[bold green]Randomly selected: [/bold green][italic]\"{starter}\"[/italic]")
+    
+    # Handle custom starter
     if starter == "Custom starter (type your own)...":
         custom_starter = await questionary.text(
             "Enter your custom conversation starter:"
@@ -265,8 +359,19 @@ async def main_conversation_loop(
     persona1_conv_id = f"persona_{persona1_name.replace(' ', '_').lower()}_{get_timestamp()}"
     persona2_conv_id = f"persona_{persona2_name.replace(' ', '_').lower()}_{get_timestamp()}"
     
-    conversation_log: List[Tuple[str, str]] = []
-
+    conversation_log: List[Tuple[str, str]] = [] # For logging to file
+    
+    # Create log file with header
+    log_filename = create_log_file_header(persona1_name, persona2_name, MODEL_NAME)
+    
+    # Track accumulated content for streaming log batches
+    accumulated_response = ""
+    last_log_time = datetime.datetime.now()
+    LOG_BATCH_INTERVAL = 5.0  # Increased interval to reduce partial logging frequency
+    
+    # Initialize a flag to track if we're already accumulated this turn's response
+    current_turn_logged = False
+    
     # Initial prompt
     current_prompt = starter_prompt
     current_speaker = persona1_name
@@ -276,15 +381,41 @@ async def main_conversation_loop(
     persona1_generated_tokens = 0
     persona2_generated_tokens = 0
     
-    # Setup display
-    ai_message_text_content: List[Union[str, Text]] = [] 
+    # Setup Rich Live display
+    # ai_message_text_content will store Text objects for the current turn's display
+    live_display_content_elements: List[Text] = []
     
-    # Initialize panels
+    # Adjust truncation based on console width
+    def calculate_max_display_length():
+        """Dynamically calculate max display length based on console dimensions"""
+        # Base value that works well for standard windows
+        base_length = 800
+        
+        # Adjust based on console width - wider consoles can display more text
+        # Get the actual console width, with a reasonable default if detection fails
+        try:
+            width = console.width or 80
+            # Scale the length based on width, with some reasonable bounds
+            return min(max(base_length, width * 12), 3000)
+        except Exception:
+            return base_length
+    
+    # Set initial value but will recalculate during display updates
+    MAX_DISPLAY_LENGTH = calculate_max_display_length()
+    
+    # Initialize layout and panels for personas
     layout[persona1_name].update(Panel(Text("Waiting..."), title=f"[bold blue]{persona1_name}[/bold blue]", border_style="blue", box=ROUNDED))
     layout[persona2_name].update(Panel(Text("Waiting..."), title=f"[bold magenta]{persona2_name}[/bold magenta]", border_style="magenta", box=ROUNDED))
 
-
-    with Live(layout, console=console, refresh_per_second=10, vertical_overflow="visible") as live_display:
+    # Add throttling control for display updates
+    last_refresh_time = datetime.datetime.now()
+    MIN_REFRESH_INTERVAL = 0.1  # Seconds between display refreshes
+    
+    # Track content changes to avoid unnecessary refreshes
+    previous_thinking_content = ""
+    previous_message_content = ""
+    
+    with Live(layout, console=console, refresh_per_second=2, vertical_overflow="visible", auto_refresh=False) as live_display:
         try:
             while max_turns == -1 or current_turn < max_turns:
                 # Swap speakers
@@ -292,7 +423,7 @@ async def main_conversation_loop(
                 current_speaker_conv_id = persona1_conv_id if current_speaker == persona1_name else persona2_conv_id
                 
                 current_turn += 1
-                ai_message_text_content: List[Union[str, Text]] = []
+                live_display_content_elements.clear() # Clear for the new turn
                 
                 turn_info = f"Turn {current_turn}"
                 if max_turns != -1:
@@ -300,8 +431,9 @@ async def main_conversation_loop(
                 
                 speaker_display_name = f"{current_speaker} (AI)"
                 
-                thinking_text = Text(f"{turn_info} - {speaker_display_name} is thinking...", style="bold yellow")
-                current_speaker_panel_content = Group(thinking_text, Text.assemble(*ai_message_text_content))
+                thinking_label_text = Text(f"{turn_info} - {speaker_display_name} is thinking...", style="bold yellow")
+                # Initial panel content before streaming starts
+                current_speaker_panel_content = Group(thinking_label_text)
                 
                 layout[current_speaker].update(Panel(
                     current_speaker_panel_content,
@@ -326,67 +458,164 @@ async def main_conversation_loop(
                         if client.debug: toc.fancy_print(console, f"Reminding {persona2_name} of their persona.", style="dim cyan")
                 
                 full_ai_message_content = ""
+                full_ai_thinking_content = "" # Accumulator for thinking content
+                accumulated_response = ""  # Reset for this turn
+                last_log_time = datetime.datetime.now()  # Reset timer
 
-                # Get streaming response
+                # Determine if we expect 'thinking' field from qwen3 models
+                expect_separate_thinking_field = "qwen3" in MODEL_NAME.lower()
+
+                # Always use streaming
                 response_stream = await client.chat(
                     model=MODEL_NAME,
-                    message=prompt_for_llm,
+                    message=prompt_for_llm, # Use potentially modified prompt
                     temperature=0.8,
-                    conversation_id=current_speaker_conv_id,
-                    system_prompt=get_full_system_prompt(current_speaker),
+                    conversation_id=current_speaker_conv_id, # Use persona-specific conversation ID
+                    system_prompt=get_full_system_prompt(current_speaker), # Ensure system prompt is for current speaker
                     stream=True
+                    # think parameter is now handled by the client internally
                 )
                 
-                if isinstance(response_stream, AsyncGenerator):
-                    async for partial_response in response_stream:
-                        if hasattr(partial_response, 'message') and hasattr(partial_response.message, 'content') and partial_response.message.content:
-                            chunk = partial_response.message.content
-                            ai_message_text_content.append(chunk)
-                            full_ai_message_content += chunk
-                            
-                            # Update display
-                            current_speaker_panel_content = Group(thinking_text, Text.assemble(*ai_message_text_content))
-                            layout[current_speaker].update(Panel(
-                                current_speaker_panel_content,
-                                title=f"[bold blue]{current_speaker}[/bold blue]" if current_speaker == persona1_name else f"[bold magenta]{current_speaker}[/bold magenta]",
-                                border_style="blue" if current_speaker == persona1_name else "magenta",
-                                box=ROUNDED
-                            ))
-                            live_display.refresh()
-                        if hasattr(partial_response, 'done') and partial_response.done:
-                            break
-                else:
-                    # Fallback for non-streaming (shouldn't happen)
-                    if isinstance(response_stream, dict) and "message" in response_stream:
-                        full_ai_message_content = response_stream["message"]["content"]
-                        ai_message_text_content.append(full_ai_message_content)
-                    else:
-                        ai_message_text_content.append("Error: Unexpected response format.")
+                if not isinstance(response_stream, AsyncGenerator):
+                    # This case should ideally not be reached if client.chat(stream=True) behaves as expected.
+                    # If it's not an AsyncGenerator, it's an unexpected error or a non-streaming dict response.
+                    error_message = "Error: Expected a streaming response (AsyncGenerator) but received a different type."
+                    if isinstance(response_stream, dict): # It might be a non-streaming dict response
+                        error_message = f"Error: Expected a streaming response, but received a non-streaming dict: {str(response_stream)[:200]}"
                     
-                    current_speaker_panel_content = Group(Text(f"{turn_info} - {speaker_display_name}", style="bold green"), Text.assemble(*ai_message_text_content))
-                    layout[current_speaker].update(Panel(
-                        current_speaker_panel_content,
-                        title=f"[bold blue]{current_speaker}[/bold blue]" if current_speaker == persona1_name else f"[bold magenta]{current_speaker}[/bold magenta]",
-                        border_style="blue" if current_speaker == persona1_name else "magenta",
-                        box=ROUNDED
-                    ))
-                    live_display.refresh()
+                    toc.fancy_print(console, error_message, style="bold red")
+                    layout["footer"].update(Text(error_message, style="bold red", justify="center"))
+                    # Potentially break or raise an exception here depending on desired error handling
+                    break # Exit the conversation loop
 
-
+                async for partial_response in response_stream:
+                    # Only process display updates if content has changed
+                    content_changed = False
+                    
+                    # Process thinking if present
+                    if expect_separate_thinking_field and hasattr(partial_response, 'message') and hasattr(partial_response.message, 'thinking') and partial_response.message.thinking:
+                        # Append new thinking content
+                        new_thinking = partial_response.message.thinking
+                        if new_thinking != full_ai_thinking_content[-len(new_thinking):] if full_ai_thinking_content else True:
+                            full_ai_thinking_content += new_thinking
+                            content_changed = True
+                    
+                    # Process main content
+                    if hasattr(partial_response, 'message') and hasattr(partial_response.message, 'content') and partial_response.message.content:
+                        chunk = partial_response.message.content
+                        if chunk:  # Only update if there's actual content
+                            full_ai_message_content += chunk
+                            content_changed = True
+                        
+                        # Update accumulated content for logging
+                        accumulated_response = full_ai_message_content
+                        
+                        # Only log partial response every LOG_BATCH_INTERVAL seconds and only if debug logging is enabled
+                        current_time = datetime.datetime.now()
+                        time_since_last_log = (current_time - last_log_time).total_seconds()
+                        
+                        if time_since_last_log >= LOG_BATCH_INTERVAL:
+                            append_to_log_file(log_filename, current_speaker, accumulated_response, partial=True)
+                            last_log_time = current_time
+                            
+                            if client.debug:
+                                toc.fancy_print(console, f"Logged partial response to debug log ({len(accumulated_response)} chars)", style="dim cyan")
+                    
+                    # Only update display if content changed and enough time has passed
+                    current_time = datetime.datetime.now()
+                    time_since_refresh = (current_time - last_refresh_time).total_seconds()
+                    
+                    if (content_changed and time_since_refresh >= MIN_REFRESH_INTERVAL) or hasattr(partial_response, 'done') and partial_response.done:
+                        # Recalculate truncation length based on current console dimensions
+                        MAX_DISPLAY_LENGTH = calculate_max_display_length()
+                        
+                        # Update live display content elements only when needed
+                        live_display_content_elements.clear()
+                        
+                        # First display thinking content if available
+                        if full_ai_thinking_content and full_ai_thinking_content != previous_thinking_content:
+                            thinking_display = full_ai_thinking_content
+                            if len(thinking_display) > MAX_DISPLAY_LENGTH:
+                                thinking_display = "..." + thinking_display[-(MAX_DISPLAY_LENGTH-3):]
+                            # Remove the thinking label, but keep styling
+                            live_display_content_elements.append(Text(thinking_display, style="italic dim yellow"))
+                            live_display_content_elements.append(Text("\n"))  # Add separator between thinking and response
+                            previous_thinking_content = full_ai_thinking_content
+                        
+                        # Then display the actual response content with different styling
+                        if full_ai_message_content and full_ai_message_content != previous_message_content:
+                            # Remove the response label, just show content
+                            message_display = full_ai_message_content
+                            if len(message_display) > MAX_DISPLAY_LENGTH:
+                                message_display = "..." + message_display[-(MAX_DISPLAY_LENGTH-3):]
+                            live_display_content_elements.append(Text(message_display, style="bold white"))
+                            previous_message_content = full_ai_message_content
+                        
+                        # Update label based on whether we're still thinking or done
+                        if hasattr(partial_response, 'done') and partial_response.done:
+                            turn_label = Text(f"{turn_info} - {speaker_display_name}", style="bold green")
+                        else:
+                            turn_label = thinking_label_text
+                            
+                        current_speaker_panel_content = Group(turn_label, *live_display_content_elements)
+                        layout[current_speaker].update(Panel(
+                            current_speaker_panel_content,
+                            title=f"[bold blue]{current_speaker}[/bold blue]" if current_speaker == persona1_name else f"[bold magenta]{current_speaker}[/bold magenta]",
+                            border_style="blue" if current_speaker == persona1_name else "magenta",
+                            box=ROUNDED
+                        ))
+                        
+                        # Force refresh and update timestamp
+                        live_display.refresh()
+                        last_refresh_time = current_time
+                    
+                    # Check if complete
+                    if hasattr(partial_response, 'done') and partial_response.done:
+                        # Final log of the complete response - only if not already logged
+                        if not current_turn_logged:
+                            append_to_log_file(log_filename, current_speaker, full_ai_message_content, partial=False)
+                            current_turn_logged = True
+                        break
+                
+                # Move the remaining code outside the streaming loop
                 conversation_log.append((current_speaker, full_ai_message_content))
                 
-                # Track tokens
+                # Ensure the final response is logged
+                if not current_turn_logged:
+                    append_to_log_file(log_filename, current_speaker, full_ai_message_content, partial=False)
+                    current_turn_logged = True
+                
                 generated_tokens_this_turn = count_tokens(full_ai_message_content)
+                if full_ai_thinking_content: # Add thinking tokens if they came separately
+                    generated_tokens_this_turn += count_tokens(full_ai_thinking_content)
+
                 if current_speaker == persona1_name:
                     persona1_generated_tokens += generated_tokens_this_turn
                 else:
                     persona2_generated_tokens += generated_tokens_this_turn
 
-                # Update display with final content
-                final_speaker_panel_content = Group(
-                    Text(f"{turn_info} - {speaker_display_name}", style="bold green"),
-                    Text.assemble(*ai_message_text_content)
-                )
+                # Final display for the turn
+                # Recalculate truncation length based on current console dimensions
+                MAX_DISPLAY_LENGTH = calculate_max_display_length()
+                
+                final_display_elements_for_panel = [Text(f"{turn_info} - {speaker_display_name}", style="bold green")]
+                
+                # Add thinking section if available (without label)
+                if full_ai_thinking_content:
+                    thinking_display = full_ai_thinking_content
+                    if len(thinking_display) > MAX_DISPLAY_LENGTH:
+                        thinking_display = "..." + thinking_display[-(MAX_DISPLAY_LENGTH-3):]
+                    final_display_elements_for_panel.append(Text(thinking_display, style="italic dim yellow"))
+                    final_display_elements_for_panel.append(Text("\n"))  # Add separator
+                
+                # Add response section (without label)
+                if full_ai_message_content:
+                    message_display = full_ai_message_content
+                    if len(message_display) > MAX_DISPLAY_LENGTH:
+                        message_display = "..." + message_display[-(MAX_DISPLAY_LENGTH-3):]
+                    final_display_elements_for_panel.append(Text(message_display, style="bold white"))
+                
+                final_speaker_panel_content = Group(*final_display_elements_for_panel)
                 layout[current_speaker].update(Panel(
                     final_speaker_panel_content,
                     title=f"[bold blue]{current_speaker}[/bold blue]" if current_speaker == persona1_name else f"[bold magenta]{current_speaker}[/bold magenta]",
@@ -400,19 +629,30 @@ async def main_conversation_loop(
                 await asyncio.sleep(0.1)
                 
         except KeyboardInterrupt:
+            # Ensure partial response is logged if interrupted
+            if accumulated_response and not current_turn_logged:
+                append_to_log_file(log_filename, current_speaker, accumulated_response, partial=False)
+                append_to_log_file(log_filename, "SYSTEM", "Conversation interrupted by user.", partial=False)
+            
             layout["footer"].update(Text("Conversation interrupted by user.", style="bold yellow", justify="center"))
         except Exception as e:
+            # Ensure partial response is logged if error occurs
+            if accumulated_response and not current_turn_logged:
+                append_to_log_file(log_filename, current_speaker, accumulated_response, partial=False)
+                append_to_log_file(log_filename, "SYSTEM", f"Error occurred: {str(e)}", partial=False)
+            
             layout["footer"].update(Text(f"An error occurred: {e}", style="bold red", justify="center"))
-            if client.debug: toc.fancy_print(console, f"Error in conversation loop: {e}", style="red")
+            if client.debug: 
+                toc.fancy_print(console, f"Error in conversation loop: {e}", style="red")
         finally:
             # Update progress bar
             if progress_bar and overall_task is not None:
                  progress_bar.update(overall_task, completed=max_turns if max_turns != -1 else current_turn, description="Conversation Ended", total=max_turns if max_turns != -1 else current_turn)
             
-            layout["footer"].update(Text("Conversation ended. Log file saved.", style="bold green", justify="center"))
+            layout["footer"].update(Text(f"Conversation ended. Log saved to: {log_filename}", style="bold green", justify="center"))
             live_display.refresh()
             
-            log_filename = log_conversation_to_file(persona1_name, persona2_name, conversation_log, MODEL_NAME)
+            # No need to create a new log file since we've been updating it incrementally
             console.print(f"\n[bold green]Conversation logged to: {log_filename}[/bold green]")
 
 
@@ -431,6 +671,9 @@ async def main():
     MODEL_NAME = await select_model(console)
     if not MODEL_NAME:
         return
+    
+    # Don't clear console between selections to prevent flickering
+    # clear_console()  # Removed
     
     # Check server
     client = toc.create_client(debug=False)
@@ -457,13 +700,13 @@ async def main():
     if not persona1:
         return
     
-    clear_console()
+    # clear_console()  # Removed
     
     persona2 = await select_persona(console, exclude=persona1)
     if not persona2:
         return
     
-    clear_console()
+    # clear_console()  # Removed
     
     starter = await select_conversation_starter(console)
     if not starter:
@@ -471,8 +714,14 @@ async def main():
     
     max_turns = await select_max_turns(console)
     
-    clear_console()
-
+    # Use a transition panel instead of clearing the console
+    console.print(Panel(
+        f"Starting conversation between [bold blue]{persona1}[/bold blue] and [bold magenta]{persona2}[/bold magenta]...\n"
+        f"Using model: [bold cyan]{MODEL_NAME}[/bold cyan]",
+        title="[bold green]Conversation Setup Complete[/bold green]",
+        border_style="green"
+    ))
+    
     # Setup progress bar
     progress_bar = Progress(
         TextColumn("[progress.description]{task.description}"),

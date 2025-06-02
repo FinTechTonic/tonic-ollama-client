@@ -85,7 +85,7 @@ class TonicOllamaClient:
         console: Optional[Console] = None,
         concurrent_models: int = CONCURRENT_MODELS,
         models_to_unload_on_close: Optional[List[str]] = None,
-        stream_responses: bool = False, # New parameter
+        stream_responses: bool = False,
     ):
         if console is None:
             console = Console()
@@ -248,8 +248,11 @@ class TonicOllamaClient:
         await self.ensure_server_ready()
 
         if stream is None:
-            stream = self.stream_responses # Use instance default if not specified
-            
+            stream = self.stream_responses
+        
+        # Determine if the 'think' parameter should be passed to the ollama client
+        use_ollama_think_param = "qwen3" in model.lower()
+
         # First prepare the conversation outside the semaphore
         if conversation_id is None:
             conversation_id = await self.create_conversation()
@@ -284,7 +287,7 @@ class TonicOllamaClient:
                 client = self.get_async_client()
 
                 if self.debug:
-                    fancy_print(self.console, f"Sending chat request to model '{model}' (stream={stream})", style="dim blue")
+                    fancy_print(self.console, f"Sending chat request to model '{model}' (stream={stream}, ollama_think={use_ollama_think_param})", style="dim blue")
 
                 if stream:
                     # Handle streaming response
@@ -293,6 +296,7 @@ class TonicOllamaClient:
                         messages=messages, # Send the prepared messages list
                         options={"temperature": temperature},
                         stream=True,
+                        think=use_ollama_think_param, # Pass think parameter based on model
                     )
                     
                     # Define the async generator within the semaphore context
@@ -320,23 +324,38 @@ class TonicOllamaClient:
 
                 else:
                     # Handle non-streaming response
-                    response: ChatResponse = await client.chat( # response is of type ChatResponse
+                    response: ChatResponse = await client.chat(
                         model=model,
                         messages=messages, # Send the prepared messages list
                         options={"temperature": temperature},
                         stream=False,
+                        think=use_ollama_think_param, # Pass think parameter based on model
                     )
+
+                    assistant_message_content = response.message.content
+                    # Include thinking if present and not empty (this happens if use_ollama_think_param was True)
+                    if use_ollama_think_param and response.message.thinking:
+                        assistant_message_content = f"<thinking>{response.message.thinking}</thinking>\n{assistant_message_content}"
+
 
                     assistant_message = {
                         "role": "assistant",
-                        "content": response["message"]["content"]
+                        "content": assistant_message_content
                     }
                     self.conversations[conversation_id].append(assistant_message)
 
                     if self.debug:
                         fancy_print(self.console, f"Received response from model '{model}'", style="dim blue")
                     
-                    return response.model_dump() # Convert ChatResponse to Dict
+                    dumped_response = response.model_dump()
+                    # If ollama_think was used and thinking content exists, ensure it's in the dumped response
+                    if use_ollama_think_param and response.message.thinking:
+                        if "message" in dumped_response:
+                            # The content already includes thinking if it was prepended
+                            dumped_response["message"]["content"] = assistant_message_content
+                            # Also add a separate 'thinking' field for clarity if it existed
+                            dumped_response["message"]["thinking"] = response.message.thinking
+                    return dumped_response
 
             except ResponseError as e:
                 fancy_print(self.console, f"Ollama API error: {str(e)}", style="red")
@@ -451,7 +470,7 @@ def create_client(
     console: Optional[Console] = None,
     concurrent_models: int = CONCURRENT_MODELS,
     models_to_unload_on_close: Optional[List[str]] = None,
-    stream_responses: bool = False, # New parameter
+    stream_responses: bool = False,
 ) -> TonicOllamaClient:
     """Create a pre-configured TonicOllama client."""
     if console is None:
@@ -465,8 +484,8 @@ def create_client(
         debug=debug,
         console=console_instance,
         concurrent_models=CONCURRENT_MODELS,
-        models_to_unload_on_close=models_to_unload_on_close, # Pass through
-        stream_responses=stream_responses, # Pass through
+        models_to_unload_on_close=models_to_unload_on_close,
+        stream_responses=stream_responses,
     )
 
 def get_ollama_models_sync() -> List[str]:
@@ -493,6 +512,5 @@ __all__ = [
     "create_client",
     "get_ollama_models_sync",
     "fancy_print",
-    # "stream_responses", # Removed from __all__
 ]
 
