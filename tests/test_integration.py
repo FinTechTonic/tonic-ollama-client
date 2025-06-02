@@ -9,31 +9,47 @@ SUPPORTED_MODELS_LIST = [
     "qwen2:7b",
 ]
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="function")
 async def live_client_session():
-    """Provides a session-scoped TonicOllamaClient for integration tests."""
-    client = toc.create_client(debug=True, max_readiness_attempts=3)
+    """Provides a function-scoped TonicOllamaClient for integration tests."""
+    # Use the new attribute name for attempts if it was intended for server readiness
+    client = toc.create_client(debug=True, max_server_startup_attempts=3) 
     yield client
 
-class BaseSpecificModelTests:
-    """Base class for integration tests targeting a specific model."""
+# Base class containing test logic
+class BaseModelTests:
+    """Base class for model integration tests."""
 
-    async def _ensure_model_ready(self, client: toc.TonicOllamaClient, model_to_check: str):
-        """Helper to check model readiness."""
+    async def _ensure_server_and_model_available(self, client: toc.TonicOllamaClient, model_to_check: str):
+        """Helper to check server readiness and model availability (via simple chat)."""
         if not model_to_check:
             pytest.skip("MODEL_NAME not available for test")
         try:
-            await client.check_model_ready(model_to_check)
-        except toc.ModelNotReadyError as e:
-            pytest.fail(f"Model {model_to_check} could not be made ready for test: {e}")
+            await client.ensure_server_ready() # Changed from check_model_ready
+            # Add a quick check if model exists by trying a very simple chat
+            # This is because ensure_server_ready no longer guarantees model presence.
+            # This is a basic check; a more robust one might involve client.list() if that API is exposed/used.
+            try:
+                await client.get_async_client().show(model=model_to_check)
+            except toc.ResponseError as e:
+                if e.status_code == 404: # Model not found
+                    pytest.skip(f"Model {model_to_check} not found on Ollama server. Please pull it first. Error: {e}")
+                else: # Other API error
+                    pytest.fail(f"API error checking model {model_to_check} availability: {e}")
 
-    async def test_model_is_explicitly_ready(self, live_client_session: toc.TonicOllamaClient, MODEL_NAME: str):
-        """Tests check_model_ready functionality."""
-        await self._ensure_model_ready(live_client_session, MODEL_NAME)
+        except toc.OllamaServerNotRunningError:
+            pytest.skip("Ollama server not running. Start it with 'ollama serve'")
+        except Exception as e: # Catch other unexpected errors during setup
+            pytest.fail(f"Unexpected error during server/model readiness check for {model_to_check}: {e}")
+
+
+    async def test_server_is_ready_for_model(self, live_client_session: toc.TonicOllamaClient, MODEL_NAME: str):
+        """Tests ensure_server_ready and basic model availability."""
+        await self._ensure_server_and_model_available(live_client_session, MODEL_NAME)
 
     async def test_live_chat_specific(self, live_client_session: toc.TonicOllamaClient, MODEL_NAME: str):
         """Tests live chat functionality."""
-        await self._ensure_model_ready(live_client_session, MODEL_NAME)
+        await self._ensure_server_and_model_available(live_client_session, MODEL_NAME)
         response = await live_client_session.chat(
             model=MODEL_NAME,
             message="What is the capital of France? Respond with only the city name.",
@@ -49,7 +65,7 @@ class BaseSpecificModelTests:
 
     async def test_live_embedding_specific(self, live_client_session: toc.TonicOllamaClient, MODEL_NAME: str):
         """Tests live embedding generation."""
-        await self._ensure_model_ready(live_client_session, MODEL_NAME)
+        await self._ensure_server_and_model_available(live_client_session, MODEL_NAME)
         embedding = await live_client_session.generate_embedding(
             model=MODEL_NAME,
             text="This is a test for embeddings."
@@ -61,43 +77,5 @@ class BaseSpecificModelTests:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("MODEL_NAME", SUPPORTED_MODELS_LIST)
-class TestModelIntegration(BaseSpecificModelTests):
+class TestModelIntegration(BaseModelTests):
     """Parameterized integration tests for various Ollama models."""
-
-    async def test_model_removal_and_pulling(self, live_client_session: toc.TonicOllamaClient, MODEL_NAME: str):
-        """Tests removing and then re-pulling the specified model."""
-        client = live_client_session
-        current_model_name = MODEL_NAME 
-        
-        try:
-            await client.check_model_ready(current_model_name)
-        except toc.ModelNotReadyError as e:
-            pytest.fail(f"Model {current_model_name} could not be made ready for pre-test setup: {e}")
-
-        ollama_client = client.get_async_client()
-        
-        try:
-            toc.fancy_print(client.console, f"Attempting to remove model {current_model_name} for testing...", style="yellow")
-            await ollama_client.delete(model=current_model_name)
-            toc.fancy_print(client.console, f"Model {current_model_name} removed successfully for testing.", style="cyan")
-        except Exception as e: # Catching generic ollama.ResponseError if model not found, or other issues
-            toc.fancy_print(client.console, f"Note: Could not remove model {current_model_name} (may already be gone or in use): {e}", style="yellow")
-
-        await asyncio.sleep(2)
-        
-        toc.fancy_print(client.console, f"Attempting to re-validate/pull model {current_model_name} after deletion attempt...", style="yellow")
-        try:
-            await client.check_model_ready(current_model_name) # This will pull if not found
-        except toc.ModelNotReadyError as e:
-            pytest.fail(f"Model {current_model_name} could not be re-pulled and made ready: {e}")
-        
-        models_after = await ollama_client.list()
-        model_names_after = [m.get('name') for m in models_after.get('models', [])]
-        assert current_model_name in model_names_after, f"Model {current_model_name} not found after re-pull attempt."
-        
-        response = await client.chat(
-            model=current_model_name,
-            message="Hello! This is a test after re-pulling the model.",
-            temperature=0.1
-        )
-        assert response.get("message", {}).get("content"), f"Chat with {current_model_name} after re-pull failed."
